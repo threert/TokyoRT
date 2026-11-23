@@ -10,8 +10,9 @@
 // Room id: "tokyo-night" | "tokyo-day" | "tokyo-dusk", with "-at=x,z" or "-at=x,y,z" (where to start; the first cells
 // load with the scene), "-look=yaw,pitch" (degrees) and "-tour" (the camera flies a set path: clips and benchmarks).
 // Controls (pointer "look": click to capture, Esc to let go): mouse to look, W A S D to move, Space / E up, C / Q down,
-// Shift faster, the wheel scales the speed. T cycles day/dusk/night, or 1/2/3 selects a preset.
-import { DirectionalLight, GLTFModel, Group, Mesh, MaterialFunction, MeshStandardMaterial, readAsset, PerspectiveCamera, PlaneGeometry, Scene, SurfaceMaterial, BufferGeometry, wetLayer, type Object3D } from "@threert/scene";
+// Shift faster, the wheel scales the speed. T cycles day/dusk/night, or 1/2/3 selects a preset; M switches the
+// denoiser (MetalFX / ThreeRT; room suffix "-builtin" starts with ThreeRT's).
+import { DirectionalLight, GLTFModel, Group, Mesh, MaterialFunction, MeshStandardMaterial, readAsset, rendering, PerspectiveCamera, PlaneGeometry, Scene, SurfaceMaterial, BufferGeometry, wetLayer, type Object3D } from "@threert/scene";
 import { defineGame, type FrameContext } from "@threert/gameplay";
 import { tokyoSky } from "./sky.ts";
 import { finishMap } from "./hero/finish.ts";
@@ -41,19 +42,29 @@ const engine = { readAsset };
 // ---------------------------------------------------------------- the world as the scene keeps it
 let lib = new Map<string, MeshStandardMaterial>();
 // The L1 glow is visible to the camera and in mirrors. Only close emitters enter the light sampler.
+// By day a room behind a window (`Room`: its nits) is its picture at a daylight interior's brightness and takes no light
+// itself: the only light it could take is the sky's through the pane, which a path finds by chance (a black window
+// that sparkles from frame to frame). Not a light either: nothing in it enters the light sampler.
 const midOf = new Map<MeshStandardMaterial, MeshStandardMaterial>();
 const midGlow = new MaterialFunction("TokyoMidGlow", {
-  params: { IsNight: 0, DayNits: 0, NightNits: 0, Tint: [1, 1, 1, 0] },
+  params: { IsNight: 0, DayNits: 0, NightNits: 0, Tint: [1, 1, 1, 0], Room: 0 },
   textures: ["Glow"],
   code: `
     let light = msample_color(m, i, $Glow, i.uv, exp2(i.uvd)).rgb * $Tint.rgb;
     if ($IsNight > 0.5) {
+      if ($NightNits > 0.0) {
+        o.base = vec3<f32>(0.0); o.specular = 0.0; o.metallic = 0.0;
+        o.emissive = select(vec3<f32>(0.0), light * $NightNits, i.near);
+      }
+    } else if ($Room > 0.0) {
       o.base = vec3<f32>(0.0); o.specular = 0.0; o.metallic = 0.0;
-      o.emissive = select(vec3<f32>(0.0), light * $NightNits, i.near);
+      o.emissive = light * $Room;
     } else {
       o.emissive = light * $DayNits;
     }`,
 });
+/** A room's brightness by day (nits): homes and offices with the lights off, shops with theirs on. */
+const ROOM_DAY = { room: 1300, shop: 2500 };
 // The far tile already has each window, sign and lamp in its night nodes. Keep that geometry resident.
 // Unlit glTF materials carry their authored glow as base colour. Restore their daylight surfaces when power is off.
 const farWindows = new MaterialFunction("TokyoFarGlass", {
@@ -312,6 +323,15 @@ function collectMaterials(M: ReturnType<typeof heroMaterials>, P: ReturnType<typ
   return materials;
 }
 
+// The denoiser: MetalFX's, where the device has it (it removes the noise and upscales in one pass: steadier on sunlit
+// walls than ThreeRT's own at the same cost), else ThreeRT's. M switches between them.
+let metalfx = true;
+function setDenoiser(on: boolean) {
+  metalfx = on;
+  rendering.set({ reconstruction: on ? ["metalfx-denoised", "builtin"] : "builtin" });
+  console.log(`Tokyo · denoiser ${on ? "MetalFX (where available)" : "ThreeRT"} · M to switch`);
+}
+
 function setTime(next: Time, camera: PerspectiveCamera) {
   const wasNight = time === "night";
   time = next;
@@ -335,6 +355,7 @@ export function sceneFor(room: string) {
   time = requested === "day" || requested === "dusk" ? requested : "night";
   const night = time === "night";
   tour = room.includes("-tour");
+  setDenoiser(!room.includes("-builtin"));
   const at = /-at=(-?[\d.]+),(-?[\d.]+)(?:,(-?[\d.]+))?/.exec(room);
   const look = /-look=(-?[\d.]+),(-?[\d.]+)/.exec(room);
   cells.clear();
@@ -382,10 +403,24 @@ export function sceneFor(room: string) {
   lib = collectMaterials(heroMaterials(true), PM);
   const daylight = collectMaterials(heroMaterials(false), propMaterials(false));
   for (const m of [...lib.values()]) {
-    if (!emits(m)) continue;
-    const k = m.emissiveIntensity;
-    const day = daylight.get(m.name)!.emissiveIntensity;
-    if (day !== k) {
+    // (rooms behind windows, lit by night or not: their daylight look)
+    const room = m.name.startsWith("room ") ? (m.name.includes("shop") ? ROOM_DAY.shop : ROOM_DAY.room) : 0;
+    if (!emits(m) && !room) continue;
+    const k = emits(m) ? m.emissiveIntensity : 0;
+    const day = daylight.get(m.name)?.emissiveIntensity ?? 0;
+    const glow = m.emissiveMap ?? m.map;
+    // (a room that stays dark by night is a little darker by day too: curtains open, no lamp; its base colour would
+    // make it black against a sunlit wall)
+    const dim = m.name === "room dark" ? 0.65 : 1;
+    const tint: [number, number, number, number] = room ? [dim, dim, dim, 0] : [m.emissive.r, m.emissive.g, m.emissive.b, 0];
+    const params = { DayNits: day, NightNits: k, Tint: tint, Room: room };
+    if (room) {
+      const d = m.clone();
+      d.name = `${m.name} ~day`;
+      d.emissiveIntensity = 0;
+      d.shader = midGlow.with({ ...params, IsNight: 0 }, glow ? { Glow: glow } : {});
+      dayOf.set(m, d);
+    } else if (day !== k) {
       const d = m.clone();
       d.name = `${m.name} ~day`;
       d.emissiveIntensity = day;
@@ -394,8 +429,7 @@ export function sceneFor(room: string) {
     const mid = m.clone();
     mid.name = `${m.name} ~mid`;
     mid.emissiveIntensity = 0;
-    const glow = m.emissiveMap ?? m.map;
-    mid.shader = midGlow.with({ IsNight: night ? 1 : 0, DayNits: day, NightNits: k, Tint: [m.emissive.r, m.emissive.g, m.emissive.b, 0] }, glow ? { Glow: glow } : {});
+    mid.shader = midGlow.with({ ...params, IsNight: night ? 1 : 0 }, glow ? { Glow: glow } : {});
     midOf.set(m, mid);
     lib.set(mid.name, mid);
   }
@@ -460,8 +494,9 @@ function aim(camera: PerspectiveCamera) {
 
 export default defineGame<Record<string, never>>({
   state: {},
-  keys: { "1": "day", "2": "dusk", "3": "night", T: "cycleTime" },
+  keys: { "1": "day", "2": "dusk", "3": "night", T: "cycleTime", M: "denoiser" },
   on: {
+    denoiser: () => setDenoiser(!metalfx),
     day: (world) => setTime("day", world.camera),
     dusk: (world) => setTime("dusk", world.camera),
     night: (world) => setTime("night", world.camera),

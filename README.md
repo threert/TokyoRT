@@ -19,7 +19,7 @@ repository. Nothing is lit in advance: every light, shadow, reflection and bounc
 </p>
 
 <sub>Frames of the offline path tracer (128–192 samples a pixel, denoised). The live view renders the same scene at
-0.5–0.6 resolution scale with temporal accumulation: noisier in motion, the same light.</sub>
+0.5–0.6 resolution scale with temporal accumulation and MetalFX's denoiser: noisier in motion, the same light.</sub>
 
 ## Run it
 
@@ -35,7 +35,8 @@ tools/demo.sh           # day; or tools/demo.sh night / dusk, and a start point:
 
 Click to capture the pointer (**Esc** lets go). **Mouse** to look, **W A S D** to move, **Space** / **E** up,
 **C** / **Q** down, **Shift** faster, the **wheel** scales the speed; **1** / **2** / **3** for day / dusk / night,
-**T** to cycle them. You start in a Golden Gai alley; fly up and out over the city. The first frame takes 10–20 s.
+**T** to cycle them; **M** switches the denoiser between MetalFX's (the default, where the system has it) and
+ThreeRT's own. You start in a Golden Gai alley; fly up and out over the city. The first frame takes 10–20 s.
 
 `node tools/tour.ts tokyo-night-tour 90` flies a set path in the live view and prints its frame times;
 `node tools/shot.ts` renders a still with the offline path tracer (as above).
@@ -85,15 +86,24 @@ Two things worth saying alongside:
 - **Far lights are seen, not sampled.** Lit windows and signs of the far level, and by night those of the mid level,
   are drawn unlit: they show their light and do not light their surroundings (light sampling is kept for the lights
   near the camera). Rooms behind frosted glass are emissive pictures of interiors, not modelled rooms.
+- **Rooms behind windows are pictures.** By night a lit room's picture is a light. By day every room shows its
+  curtains, blinds or shelves at a daylit interior's brightness and takes no light itself: what it would take, the
+  sky's light through the pane, a path finds only by chance, and the windows came out black and sparkling.
 
 ## Performance
 
 Measured on an M3 Max, flying the tour (`tools/tour.ts`, 90 s, streaming all the way; leaving out the first 20 s,
-while the resolution scale settles): frame interval p50 21 ms and p95 49 ms by day, p50 22 ms and p95 74–79 ms by night, at 0.5–0.6
-resolution scale, with no scene rebuild. Flying slowly or standing it holds 60 fps; fast flight still hitches now and
-then, more by night (a cell's lights added or removed updates the engine's light tree: the next thing to make cheaper).
-By day the street level's unlit signs and windows are not lights at all; switching between day and night loads the near
-cells again, the nearest first, in a second or two.
+while the resolution scale settles), at 0.5–0.6 resolution scale, with no scene rebuild:
+
+| frame interval | by day | by night |
+|---|---|---|
+| MetalFX's denoiser (default) | p50 24–28 ms, p95 58–64 ms | p50 24 ms, p95 87 ms |
+| ThreeRT's (`-builtin` room suffix, or **M**) | p50 23 ms, p95 51–55 ms | p50 22 ms, p95 83 ms |
+
+MetalFX costs a few milliseconds a frame and holds sunlit walls and windows steadier. Flying slowly or standing it
+holds 60 fps; fast flight still hitches now and then, more by night (a cell's lights added or removed updates the
+engine's light tree: the next thing to make cheaper). By day the street level's unlit signs and windows are not lights
+at all; switching between day and night loads the near cells again, the nearest first, in a second or two.
 
 ## Limits
 
