@@ -1,17 +1,22 @@
-// Model origins are at ground contact (wall fittings face +Z). Placements reuse these small GLBs.
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+// The street clutter as models built in code: air conditioners, crates, plants, propane bottles, meters, manholes.
+// Model origins are at ground contact (wall fittings face +z). The baker (tools/tokyo/city-bake.ts) makes each one a kit
+// piece, and the cells place its copies as instances.
 import { MeshStandardMaterial } from "@threert/scene";
-import { Batches, cross, Frame, norm, rng, sub, type V3 } from "../../scene/hero/builder.ts";
-import { MODEL_KEYS } from "../../scene/hero/dress.ts";
-import { GlbBuilder } from "./glb.ts";
-import { repoRoot } from "../lib/paths.ts";
+import { Batches, cross, Frame, norm, rng, sub, type V3 } from "./builder.ts";
 
-const dir = join(repoRoot, "assets/city/street-models");
-mkdirSync(dir, { recursive: true });
+export const STREET_MODELS = ["aircon", "airconRust", "crate1", "crate2", "crate3", "propane", "trashbag", "plant1", "plant2", "plant4", "planter", "stool", "box", "can", "wcrate", "powerbox", "camera", "wallLamp", "socket", "manhole", "utility"] as const;
+export type StreetModel = (typeof STREET_MODELS)[number];
+const MODEL_KEYS = STREET_MODELS;
+
 const frame = new Frame([0, 0, 0], [1, 0, 0], [0, 0, 1]), tau = 2 * Math.PI;
-const paint = (name: string, color: number, roughness = .65, metalness = 0) =>
-  new MeshStandardMaterial({ name, color, roughness, metalness });
+/** The models' materials, one per name (the scene finds them by name). */
+const made = new Map<string, MeshStandardMaterial>();
+const paint = (name: string, color: number, roughness = .65, metalness = 0) => {
+  let m = made.get(name);
+  if (!m) made.set(name, (m = new MeshStandardMaterial({ name, color, roughness, metalness })));
+  return m;
+};
+const twoSided = (m: MeshStandardMaterial) => { m.side = "double"; return m; };
 const enamel = paint("ivory enamel", 0xd5ceae, .43, .14), steel = paint("galvanized steel", 0xa4aba4, .38, .73);
 const iron = paint("cast iron", 0x545b58, .64, .48), dark = paint("rubber", 0x262b28, .67);
 const cedar = paint("cedar", 0x987349),
@@ -20,14 +25,21 @@ const cedar = paint("cedar", 0x987349),
 const terracotta = paint("unglazed clay", 0xb56f50),
   earth = paint("soil", 0x44372b),
   porcelain = paint("porcelain", 0xdad5bd, .38);
-const leaves = [0x495f32, 0x687b3d, 0x7d8947, 0x3d5b37, 0x526c49].map((c, i) => paint("leaf " + i, c));
+const leaves = [0x495f32, 0x687b3d, 0x7d8947, 0x3d5b37, 0x526c49].map((c, i) => twoSided(paint("leaf " + i, c)));
 const bark = paint("bark", 0x685746),
   glass = paint("opal glass", 0xe4dfc7, .22),
   red = paint("red indicator", 0xad4c39);
 const cratePaint = [0xa76436, 0x566f69, 0x9b8143].map((c, i) => paint("crate " + i, c, .51));
 type Mat = MeshStandardMaterial;
 
-function generate(key: typeof MODEL_KEYS[number]) {
+/** Every material the street models use (the scene's library holds them: names are unique). */
+export function streetMaterials(): MeshStandardMaterial[] {
+  for (const key of STREET_MODELS) streetModel(key);
+  return [...made.values()];
+}
+
+/** A street model's geometry, at the origin (standing on y 0, a wall fitting facing +z), in `STREET_MATERIALS`. */
+export function streetModel(key: StreetModel): Batches {
   const b = new Batches(), r = rng(1601 + MODEL_KEYS.indexOf(key) * 73);
   const box = (m: Mat, x: number, y: number, z: number, w: number, h: number, d: number) =>
     b.box(m, frame, x - w / 2, x + w / 2, y, y + h, z - d / 2, z + d / 2);
@@ -186,19 +198,5 @@ function generate(key: typeof MODEL_KEYS[number]) {
     box(dark, w * .35, h * .45, d * .55, .012, .049, .012);
     box(red, -w * .27, h * .85, d * .55, .02, .016, .013);
   } else throw new Error("Missing procedural model: " + key);
-  const glb = new GlbBuilder();
-  for (const e of b.entries()) {
-    const m = e.material;
-    const mat = glb.material({
-      name: m.name,
-      color: [m.color.r, m.color.g, m.color.b],
-      roughness: m.roughness,
-      metallic: m.metalness,
-      doubleSided: leaves.includes(m),
-    });
-    glb.triangles(mat, e.positions, e.normals, e.uvs, e.index);
-  }
-  writeFileSync(join(dir, key + ".glb"), glb.build(key));
+  return b;
 }
-for (const key of MODEL_KEYS) generate(key);
-console.log(`Generated ${MODEL_KEYS.length} street models`);

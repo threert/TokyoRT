@@ -10,7 +10,7 @@ const HERO = "assets/city/hero/tex";
 function finish(id: string, size: number, o: { tint?: [number, number, number]; rough?: number; metal?: boolean; wet?: number; grime?: number; puddles?: number; normal?: number; name?: string } = {}) {
   const map = finishMap(id, "color");
   map.repeat = [1 / size, 1 / size];
-  return new SurfaceMaterial({
+  return tiling(new SurfaceMaterial({
     name: o.name ?? id,
     map,
     normalMap: finishMap(id, "normal"),
@@ -22,7 +22,12 @@ function finish(id: string, size: number, o: { tint?: [number, number, number]; 
     wet: o.wet ?? 0,
     ...(o.grime ? { grime: { amount: o.grime, scale: 1.6 } } : {}),
     ...(o.puddles ? { puddles: { scale: 2.2, amount: o.puddles } } : {}),
-  });
+  }));
+}
+/** A material whose textures repeat at their real size (UVs in metres): a kit element may take any copy's UVs. */
+function tiling<T extends MeshStandardMaterial>(m: T): T {
+  m.userData.tiling = true;
+  return m;
 }
 
 /** A texture of the hero set (signs, lanterns, ...), sRGB, clamped (atlas cells). */

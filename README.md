@@ -24,7 +24,7 @@ repository. Nothing is lit in advance: every light, shadow, reflection and bounc
 ## Run it
 
 macOS on Apple silicon (M3 or later: hardware ray tracing), [Rust](https://rustup.rs), [Node](https://nodejs.org) 24,
-about 30 GB of disk and the system's Japanese fonts (Hiragino, drawn into the signs). Building everything takes
+about 20 GB of disk and the system's Japanese fonts (Hiragino, drawn into the signs). Building everything takes
 a few minutes on an M3 Max, plus the engine's build and the downloads (~1.1 GB from PLATEAU, OpenStreetMap and GSI).
 
 ```bash
@@ -52,19 +52,26 @@ The city is three levels of detail, picked per 128 m cell by distance from the c
 | street (L0) | within ~140 m | the same buildings in full: doors and windows cut into the walls with depth, shops and bars, eaves, lanterns, noren, meters, pipes, utility poles and wires across the alleys, gutters, props |
 
 - **Baking the cells** (`tools/tokyo/city-bake.ts`): the dressing rules (`scene/hero/dress.ts`) run once per cell and
-  level and write what they make: meshes per material and the places of models and props. Shinjuku is 598 cells: 283 M
-  triangles at street level, 74 M at mid distance.
-- **Streaming** (`scene/city.game.ts`): the scene reads a cell's meshes as the camera nears it (`readAsset`, a range of
-  the file at a time) and adds them in place, a frame budget of triangles at a time; the level it replaces goes
-  afterwards, a few hundred objects a frame, and the far quadrant under it moves out of sight. The engine adds and
-  removes them without rebuilding the scene: what that takes is in ThreeRT's
-  [docs/RUNTIME.md, "Streaming"](https://github.com/meshy-dev/ThreeRT/blob/main/docs/RUNTIME.md).
+  level and write what they make: meshes per material, and where the kit's pieces stand.
+- **The kit** (`kit.bin`): what repeats, once. Windows (drawn at the nearest of a few standard sizes 12 % apart and
+  stretched to their own by their instance: two pieces each, what sits in the opening and what is on the wall),
+  gutter gratings, the street models and the props: 8,350 pieces, 0.7 M triangles. A cell has its copies of a piece as
+  frames; a piece it has fewer than 8 copies of, of few triangles, goes into its meshes instead. Shinjuku is 598 cells:
+  166 M triangles of their own at street level and 63 M at mid distance, 1.7 M and 0.45 M copies of the kit's pieces;
+  15 GB (each window drawn out was 23 GB).
+- **Streaming** (`scene/city.game.ts`): the scene reads a cell's meshes and kit frames as the camera nears it
+  (`readAsset`, a range of the file at a time) and adds them in place, a frame budget at a time: its meshes, its kit
+  pieces (one instanced mesh a piece and material, every copy sharing the piece's geometry), then what emits, together.
+  The level it replaces goes afterwards, a few hundred objects a frame, and the far quadrant under it moves out of
+  sight. The engine adds and removes them without rebuilding the scene, and builds its top-level acceleration structure
+  from the instances that changed (half a million instances resident, a commit of ~5 ms): what that takes is in
+  ThreeRT's [docs/RUNTIME.md, "Streaming"](https://github.com/meshy-dev/ThreeRT/blob/main/docs/RUNTIME.md).
 - **The look** is rules, not hand placement: a style per building from its recorded use (shops, offices, flats, houses),
   one window module per building, signs and noren drawn per shop (`tools/tokyo/hero-shops.ts`), props built in code
   (`scene/hero/props.ts`: bicycles, scooters, vending machines, A-boards).
 - **Generated assets**, built by `tools/setup.sh`: 26 tiling finishes at their real size, colour, normal and roughness
   from the same joints and relief (`tools/tokyo/surfaces.ts`: asphalt, pavers, stucco, tiles, brick, planks, shutters,
-  corrugated sheet); the street clutter as small models (`tools/tokyo/street-models.ts`: air conditioners, crates,
+  corrugated sheet); the street clutter as small models (`scene/hero/street.ts`: air conditioners, crates,
   planters, propane bottles, power boxes, stools, manholes); street and park trees, ginkgo and cherry grown with
   [EZ-Tree](https://github.com/dgreenheck/ez-tree) at two levels of detail, and their far crowns (`tools/tokyo/trees.ts`).
 
@@ -97,13 +104,13 @@ while the resolution scale settles), at 0.5–0.6 resolution scale, with no scen
 
 | frame interval | by day | by night |
 |---|---|---|
-| MetalFX's denoiser (default) | p50 24–28 ms, p95 58–64 ms | p50 24 ms, p95 87 ms |
-| ThreeRT's (`-builtin` room suffix, or **M**) | p50 23 ms, p95 51–55 ms | p50 22 ms, p95 83 ms |
+| MetalFX's denoiser (default) | p50 17 ms, p95 43 ms | p50 17 ms, p95 68 ms |
+| ThreeRT's (`-builtin` room suffix, or **M**) | p50 17 ms, p95 43 ms | p50 17 ms, p95 67 ms |
 
-MetalFX costs a few milliseconds a frame and holds sunlit walls and windows steadier. Flying slowly or standing it
-holds 60 fps; fast flight still hitches now and then, more by night (a cell's lights added or removed updates the
-engine's light tree: the next thing to make cheaper). By day the street level's unlit signs and windows are not lights
-at all; switching between day and night loads the near cells again, the nearest first, in a second or two.
+MetalFX holds sunlit walls and windows steadier at about the same cost. Flying slowly or standing it holds 60 fps;
+fast flight still hitches now and then, more by night (a cell's lights added or removed updates the engine's light
+tree: the next thing to make cheaper). By day the street level's unlit signs and windows are not lights at all;
+switching between day and night loads the near cells again, the nearest first, in a second or two.
 
 ## Limits
 
@@ -117,10 +124,10 @@ at all; switching between day and night loads the near cells again, the nearest 
 
 ```
 scene/            the scene: city.game.ts (levels, streaming, the fly camera), sky.ts, hero/ (the dressing rules,
-                  materials, props, shops)
+                  materials, props, street models, shops)
 tools/city/       the city compiler (PLATEAU / OSM / GSI -> 256 m tiles), from jeantimex/tokyo
-tools/tokyo/      the far level (to-glb.ts --city), the cell baker, the drawn textures, the generated finishes, street
-                  models and trees (surfaces.ts, street-models.ts, trees.ts), the data prefetchers
+tools/tokyo/      the far level (to-glb.ts --city), the cell baker and its kit, the drawn textures, the generated
+                  finishes and trees (surfaces.ts, trees.ts), the data prefetchers
 tools/            setup.sh, demo.sh, tour.ts, shot.ts, bundle.ts
 engine/           ThreeRT (submodule): the renderer and the scene API
 ```

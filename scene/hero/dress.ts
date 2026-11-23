@@ -6,7 +6,8 @@
 // to the houses; and the clutter by the doors (generated street models). Deterministic: one seed.
 import { GLTFModel, Group, Mesh, type Object3D } from "@threert/scene";
 import earcut from "earcut";
-import { Batches, Frame, add, mul, norm, rng, type V3 } from "./builder.ts";
+import { Batches, Frame, add, mul, norm, rng, type KitPiece, type V3 } from "./builder.ts";
+import type { StreetModel } from "./street.ts";
 import type { Mats } from "./materials.ts";
 import { shopCells } from "./shops.ts";
 import { aBoard, beerCases, bicycle, propMaterials, scooter, umbrellaStand, vendingMachine } from "./props.ts";
@@ -31,9 +32,9 @@ const BLIND_CELLS = 8;
 const blindCell = (i: number): [number, number, number, number] => [i / BLIND_CELLS + 0.002, 0, (i + 1) / BLIND_CELLS - 0.002, 1];
 /** The interiors each kind of building shows. */
 const INSIDES = { home: [0, 2, 2, 3, 3, 4, 5, 7, 1], office: [1, 1, 6, 6, 6], shop: [1, 2, 3, 7, 6], bar: [0, 2, 3, 7] };
-export const MODEL_KEYS = ["aircon", "airconRust", "crate1", "crate2", "crate3", "propane", "trashbag", "plant1", "plant2", "plant4", "planter", "stool", "box", "can", "wcrate", "powerbox", "camera", "wallLamp", "socket", "manhole", "utility"] as const;
+/** The models placed as glTF files: the trees (tools/tokyo/trees.ts). The street models (hero/street.ts) are the kit's. */
 export const MODELS: Record<string, { uri: string }> = Object.fromEntries(
-  [...MODEL_KEYS, ...TREE_FORMS.flatMap((_, v) => [treeKey(v, 0), treeKey(v, 1)])].map(key => [key, { uri: `assets/city/street-models/${key}.glb` }]),
+  TREE_FORMS.flatMap((_, v) => [treeKey(v, 0), treeKey(v, 1)]).map((key) => [key, { uri: `assets/city/street-models/${key}.glb` }]),
 );
 
 
@@ -55,6 +56,8 @@ export interface DressOptions {
   ground?: boolean;
   /** Record models and props here rather than making objects (baking). */
   record?: Placement[];
+  /** Repeated elements (windows, ...) to this sink in their own frames rather than into the batches (baking). */
+  kit?: (piece: KitPiece) => void;
 }
 
 /** One random stream per building (and per thing outside buildings): what a building looks like does not depend on
@@ -68,9 +71,15 @@ function hashSeed(...xs: number[]) {
   return h >>> 0;
 }
 
+/** `v` to the nearest multiple of `q`. */
+const snap = (v: number, q: number) => Math.round(v / q) * q;
+/** A size to the nearest of a geometric series 12 % apart (from 10 cm). */
+const sizeStep = (v: number) => 0.1 * Math.pow(1.12, Math.round(Math.log(Math.max(v, 0.1) / 0.1) / Math.log(1.12)));
+
 export function dressDistrict(data: HeroData, M: Mats, night: boolean, seed = 11, ab: DressOptions = {}): { objects: Object3D[]; triangles: number; counts: Record<string, number>; facades: FacadeInfo[]; batches: Batches } {
   let R = rng(seed);
   const B = new Batches();
+  B.kit = ab.kit ?? null;
   const objects: Object3D[] = [];
   const counts: Record<string, number> = {};
   const count = (k: string) => (counts[k] = (counts[k] ?? 0) + 1);
@@ -280,13 +289,14 @@ export function dressDistrict(data: HeroData, M: Mats, night: boolean, seed = 11
   }
 
   /** A model at a world point, turned so its +z faces `facing`, its own node offset undone. */
-  function place(key: keyof typeof MODELS, at: V3, facing: V3, scale = 1, spin = 0) {
+  function place(key: StreetModel | string, at: V3, facing: V3, scale = 1, spin = 0) {
     const m = MODELS[key];
     if (ab.record) {
       if (!ab.noProps) ab.record.push({ m: key, at: [...at], ry: Math.atan2(facing[0], facing[2]) + spin, s: scale });
       count(key);
       return null;
     }
+    if (!m) return null;
     const g = new Group();
     g.position.set(...at);
     g.rotation.y = Math.atan2(facing[0], facing[2]) + spin;
@@ -298,10 +308,25 @@ export function dressDistrict(data: HeroData, M: Mats, night: boolean, seed = 11
     return g;
   }
 
-  /** A window: aluminium frame, sliding sashes, the glass, the room behind it; the opening into `openings`. */
-  function windowAt(e: Edge, openings: Opening[], s0: number, s1: number, y0: number, y1: number, o: { frosted?: boolean; lit?: number; grille?: boolean; inside?: number; frame?: typeof M.aluminium; depth?: number; bar?: boolean; shop?: boolean; hood?: boolean }) {
-    const f = e.f, base = f.o[1], depth = o.depth ?? W.depth;
+  /** A window: aluminium frame, sliding sashes, the glass, the room behind it; the opening into `openings`. One kit
+   *  element (its frame, glass, sill and hood; the room behind is the cell's: its picture and light vary). */
+  function windowAt(e: Edge, openings: Opening[], s0: number, s1: number, y0: number, y1: number, o: Parameters<typeof drawWindow>[6]) {
+    // Drawn at a standard size, the nearest of a few (12 % apart), and stretched to its own: one kit piece per size and
+    // kind of window. The bars stretch with it (by 6 % at most: a couple of millimetres).
+    // Two pieces: what sits in the opening (its frame and glass, from the recess: one piece whatever the wall's
+    // depth) and what is on the wall (the sill, the hood, a grille).
+    const w = s1 - s0, h = y1 - y0, ws = sizeStep(w), hs = sizeStep(h), depth = snap(o.depth ?? W.depth, 0.02), scale: V3 = [w / ws, h / hs, 1];
     openings.push({ s0, s1, y0, y1, depth });
+    B.begin(e.f, s0, y0 - e.f.o[1], scale, -depth);
+    drawWindow(e, null, s0, s0 + ws, y0, y0 + hs, o, () => {
+      B.end();
+      B.begin(e.f, s0, y0 - e.f.o[1], scale);
+    });
+    B.end();
+  }
+  function drawWindow(e: Edge, openings: Opening[] | null, s0: number, s1: number, y0: number, y1: number, o: { frosted?: boolean; lit?: number; grille?: boolean; inside?: number; frame?: typeof M.aluminium; depth?: number; bar?: boolean; shop?: boolean; hood?: boolean }, outside = () => {}) {
+    const f = e.f, base = f.o[1], depth = snap(o.depth ?? W.depth, 0.02);
+    openings?.push({ s0, s1, y0, y1, depth });
     const Y0 = y0 - base, Y1 = y1 - base, fr = o.frame ?? W.frame, t = 0.035, d = -depth;
     const cellIx = o.inside ?? R.pick(W.cells);
     // the sashes: two sliding, three, or one fixed pane under a transom
@@ -317,6 +342,7 @@ export function dressDistrict(data: HeroData, M: Mats, night: boolean, seed = 11
       if (transom) B.rect(fr, f, s0 + t, transom - 0.02, s1 - t, transom + 0.02, d + 0.035);
       pane(M.glass, f, s0 + t, Y0 + t, s1 - t, Y1 - t, d + 0.02);
       B.rect(roomFor(o.lit), f, s0, Y0, s1, Y1, d - 0.3, blindCell(cellIx));
+      outside();
       if (hood) B.box(W.frame, f, s0 - 0.1, s1 + 0.1, Y1 + 0.06, Y1 + 0.1, 0, 0.3, { skip: "b" });
       count("windows");
       return;
@@ -352,6 +378,7 @@ export function dressDistrict(data: HeroData, M: Mats, night: boolean, seed = 11
     } else {
       B.rect(roomFor(o.lit), f, s0, Y0, s1, Y1, d - 0.25, blindCell(cellIx));
     }
+    outside();
     // a sill, and a hood over the houses' windows (the aluminium kirivoke)
     if (W.sill || o.shop) B.box(M.coping, f, s0 - 0.04, s1 + 0.04, Y0 - 0.05, Y0, -0.02, 0.06);
     if (hood) {
@@ -645,12 +672,13 @@ export function dressDistrict(data: HeroData, M: Mats, night: boolean, seed = 11
     for (let c = 0; c < nCables; c++) {
       const cy = gTop + R.range(0.1, 0.9) - f.o[1], cd = R.range(0.03, 0.08), r = R.range(0.006, 0.014);
       const pts: V3[] = [];
+      // (clipped every 1.1 m, drooping between: a point at each clip and one between)
       const steps = Math.max(2, Math.round(L / 1.1));
-      for (let k = 0; k <= steps * 4; k++) {
-        const t = k / (steps * 4), sag = 0.03 * Math.sin(((k % 4) / 4) * Math.PI);
+      for (let k = 0; k <= steps * 2; k++) {
+        const t = k / (steps * 2), sag = k % 2 ? 0.03 : 0;
         pts.push(f.p(t * L, cy - sag, cd));
       }
-      B.tube(c % 2 ? M.cable : M.cableGrey, pts, r, 5);
+      B.tube(c % 2 ? M.cable : M.cableGrey, pts, r, 4);
     }
     // the gas: a yellow pipe low along the wall, rising to its meter
     if (R.chance(0.5) && L > 1.5) {
@@ -672,6 +700,8 @@ export function dressDistrict(data: HeroData, M: Mats, night: boolean, seed = 11
         const a = k * lid + gap / 2, b = (k + 1) * lid - gap / 2;
         const pm = f.p((a + b) / 2, 0, 0.2);
         const gy = groundY(pm[0], pm[2]) - f.o[1];
+        // (each lid one kit element: the grating's bars and frame, or a lid's finger holes)
+        B.begin(f, a, gy);
         if (k % 4 === 2) {
           // the grating: bearing bars across the channel on a frame, the channel's floor below
           B.quad(M.cable, f.p(a, gy - 0.12, 0.04), f.p(b, gy - 0.12, 0.04), f.p(b, gy - 0.12, 0.36), f.p(a, gy - 0.12, 0.36), [0, 1, 0], [[0, 0], [1, 0], [1, 1], [0, 1]]);
@@ -687,6 +717,7 @@ export function dressDistrict(data: HeroData, M: Mats, night: boolean, seed = 11
             B.flat(M.cable, f, q - 0.03, q + 0.03, 0.185, 0.215, gy + 0.0125);
           }
         }
+        B.end();
       }
     }
     void wallMat;

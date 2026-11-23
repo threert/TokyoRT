@@ -16,7 +16,7 @@ export const lerp3 = (a: V3, b: V3, t: number): V3 => [a[0] + (b[0] - a[0]) * t,
 
 /** A growable typed array (the script runtime keeps a plain number[] at 16 bytes an element: millions of vertices would
  *  pass its heap limit). */
-class Grow<T extends Float32Array | Uint32Array> {
+class Grow<T extends Float32Array | Float64Array | Uint32Array> {
   a: T;
   length = 0;
   private make: (n: number) => T;
@@ -58,7 +58,12 @@ class Grow<T extends Float32Array | Uint32Array> {
 }
 
 class Part {
-  pos = new Grow((n) => new Float32Array(n));
+  pos: Grow<Float32Array | Float64Array>;
+  constructor(exact = false) {
+    // (a kit element's points in doubles: in single precision, at a kilometre from the origin, the same element in two
+    // places differs by a fraction of a millimetre, and its key with it)
+    this.pos = exact ? new Grow<Float64Array>((n) => new Float64Array(n)) : new Grow<Float32Array>((n) => new Float32Array(n));
+  }
   nor = new Grow((n) => new Float32Array(n));
   uv = new Grow((n) => new Float32Array(n));
   idx = new Grow((n) => new Uint32Array(n));
@@ -84,14 +89,124 @@ export class Frame {
   }
 }
 
+/** A repeated element (a window, a grate, a lamp) as the builder hands it to a `Batches.kit` sink: its untextured
+ *  parts in its own frame (x along the wall, y up, z out of it; metres), one per material, and where it stands. */
+export interface KitPiece {
+  /** The geometry's identity: equal keys, equal geometry (positions to the millimetre). */
+  key: string;
+  parts: { material: MeshStandardMaterial; positions: Float32Array; normals: Float32Array; uvs: Float32Array; index: Uint32Array }[];
+  /** Its frame in the world, as the columns of a 3 x 4 matrix: x axis, y axis, z axis, origin. */
+  matrix: number[];
+}
+
+/** What a kit piece may hold (the rest stays in the batches): materials whose look does not depend on UVs, and
+ *  tiling ones (`userData.tiling`: textures at their real size, UVs in metres), which take the first copy's UVs. */
+function plain(m: MeshStandardMaterial) {
+  const t = m as MeshStandardMaterial & { map?: unknown; normalMap?: unknown; roughnessMap?: unknown; emissiveMap?: unknown; alphaMap?: unknown; shader?: unknown };
+  if (t.userData?.tiling === true) return true;
+  return !t.map && !t.normalMap && !t.roughnessMap && !t.emissiveMap && !t.alphaMap && !t.shader;
+}
+
 export class Batches {
   private parts = new Map<MeshStandardMaterial, Part>();
   triangles = 0;
+  /** Where repeated elements go (`piece`): none, and they are batched as everything else is. */
+  kit: ((piece: KitPiece) => void) | null = null;
+  /** An element of fewer triangles is batched all the same (an instance costs about as much as a few triangles). */
+  kitMinTriangles = 24;
+  private open: { o: V3; u: V3; n: V3; scale: V3; parts: Map<MeshStandardMaterial, Part>; from: Map<Part, number> } | null = null;
 
   private part(m: MeshStandardMaterial): Part {
-    let p = this.parts.get(m);
-    if (!p) this.parts.set(m, (p = new Part()));
+    const into = this.open && plain(m) ? this.open.parts : this.parts;
+    let p = into.get(m);
+    if (!p) into.set(m, (p = new Part(into !== this.parts)));
     return p;
+  }
+
+  /** Starts a repeated element in frame `f` at (s, y) (its origin; y in the frame's terms): until `end`, what it adds
+   *  in untextured materials is the element's. `scale` stretches it about its origin (along, up, out) where it stands:
+   *  an element drawn at a standard size and placed at its own (the element's pieces stretched by its instance, the
+   *  rest drawn meanwhile stretched here). `d` puts its origin out of the wall (in, below 0). Without a `kit` sink, only
+   *  the stretch. */
+  begin(f: Frame, s: number, y: number, scale: V3 = [1, 1, 1], d = 0) {
+    if (this.open) throw new Error("Batches.begin: an element is open");
+    const from = new Map<Part, number>();
+    for (const p of this.parts.values()) from.set(p, p.pos.length);
+    this.open = { o: f.p(s, y, d), u: [f.u[0], 0, f.u[2]], n: [f.n[0], 0, f.n[2]], scale, parts: new Map(), from };
+    // (no sink: everything goes to the batches, and `end` stretches it)
+    if (!this.kit) this.open.parts = this.parts;
+  }
+
+  /** The horizontal axes round ones start from: the open element's (along, out), else the world's (x, z). */
+  private axes(): [V3, V3] {
+    return this.open ? [this.open.u, this.open.n] : [[1, 0, 0], [0, 0, 1]];
+  }
+
+  /** Ends the element: its parts to the sink, in its own frame; what else it drew stretched where it stands. */
+  end() {
+    const e = this.open;
+    if (!e) return;
+    this.open = null;
+    const { o, u, n, scale } = e;
+    if (scale[0] !== 1 || scale[1] !== 1 || scale[2] !== 1) {
+      for (const p of this.parts.values()) {
+        const P = p.pos.a;
+        for (let i = e.from.get(p) ?? 0; i < p.pos.length; i += 3) {
+          const dx = P[i] - o[0], dy = P[i + 1] - o[1], dz = P[i + 2] - o[2];
+          const a = (dx * u[0] + dz * u[2]) * scale[0], c = (dx * n[0] + dz * n[2]) * scale[2];
+          P[i] = o[0] + u[0] * a + n[0] * c;
+          P[i + 1] = o[1] + dy * scale[1];
+          P[i + 2] = o[2] + u[2] * a + n[2] * c;
+        }
+      }
+    }
+    if (!this.kit || !e.parts.size) return;
+    let tris = 0;
+    for (const p of e.parts.values()) tris += p.idx.length / 3;
+    if (tris < this.kitMinTriangles) {
+      // (into the batches as it stands)
+      for (const [m, c] of e.parts) {
+        let p = this.parts.get(m);
+        if (!p) this.parts.set(m, (p = new Part()));
+        const base = p.pos.length / 3, P = c.pos.view(), N = c.nor.view(), U = c.uv.view(), I = c.idx.view();
+        for (let i = 0; i < P.length; i += 3) {
+          p.pos.v3(P[i], P[i + 1], P[i + 2]);
+          p.nor.v3(N[i], N[i + 1], N[i + 2]);
+        }
+        for (let i = 0; i < U.length; i += 2) p.uv.v2(U[i], U[i + 1]);
+        for (let i = 0; i < I.length; i += 3) p.idx.v3(base + I[i], base + I[i + 1], base + I[i + 2]);
+      }
+      return;
+    }
+    const parts: KitPiece["parts"] = [];
+    let h1 = 0x811c9dc5 | 0, h2 = 0x27d4eb2f | 0;
+    const mix = (v: number) => {
+      h1 = Math.imul(h1 ^ v, 0x01000193);
+      h2 = Math.imul(h2 ^ v, 0x5bd1e995) ^ (h2 >>> 13);
+    };
+    for (const [material, p] of [...e.parts].sort((a, b) => (a[0].name < b[0].name ? -1 : a[0].name > b[0].name ? 1 : 0))) {
+      if (!p.idx.length) continue;
+      const P = p.pos.view(), N = p.nor.view(), I = p.idx.view().slice();
+      const positions = new Float32Array(P.length), normals = new Float32Array(N.length);
+      for (let i = 0; i < P.length; i += 3) {
+        const dx = P[i] - o[0], dy = P[i + 1] - o[1], dz = P[i + 2] - o[2];
+        positions[i] = Math.round((dx * u[0] + dz * u[2]) * 1000) / 1000;
+        positions[i + 1] = Math.round(dy * 1000) / 1000;
+        positions[i + 2] = Math.round((dx * n[0] + dz * n[2]) * 1000) / 1000;
+        normals[i] = N[i] * u[0] + N[i + 2] * u[2];
+        normals[i + 1] = N[i + 1];
+        normals[i + 2] = N[i] * n[0] + N[i + 2] * n[2];
+      }
+      for (let k = 0; k < material.name.length; k++) mix(material.name.charCodeAt(k));
+      for (let i = 0; i < positions.length; i++) mix(Math.round(positions[i] * 1000));
+      for (let i = 0; i < normals.length; i++) mix(Math.round(normals[i] * 100));
+      for (let i = 0; i < I.length; i++) mix(I[i]);
+      parts.push({ material, positions, normals, uvs: p.uv.view().slice(), index: I });
+    }
+    if (!parts.length) return;
+    const key = (h1 >>> 0).toString(36) + (h2 >>> 0).toString(36);
+    const [sx, sy, sz] = scale;
+    this.kit({ key, parts, matrix: [u[0] * sx, 0, u[2] * sx, 0, sy, 0, n[0] * sz, 0, n[2] * sz, o[0], o[1], o[2]] });
   }
 
   /** A quad a b c d (a ring, either order) facing `n`, with UVs per corner. */
@@ -162,7 +277,8 @@ export class Batches {
     const p = this.part(m);
     for (let i = 0; i + 1 < pts.length; i++) {
       const a = pts[i], b = pts[i + 1], t = norm(sub(b, a));
-      const ref: V3 = Math.abs(t[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0];
+      // (an element's tubes turned by its frame, not the world's axes: the same element facing elsewhere, the same key)
+      const ref: V3 = Math.abs(t[1]) < 0.9 ? [0, 1, 0] : this.open ? this.open.u : [1, 0, 0];
       const x = norm(cross(t, ref)), y = cross(t, x);
       const base = p.pos.length / 3, L = len(sub(b, a));
       for (let k = 0; k <= seg; k++) {
@@ -193,8 +309,9 @@ export class Batches {
   cylinder(m: MeshStandardMaterial, c: V3, r0: number, r1: number, h: number, seg = 12, uScale = 1) {
     const p = this.part(m);
     const base = p.pos.length / 3, slope = (r0 - r1) / h;
+    const [ex, ez] = this.axes();
     for (let k = 0; k <= seg; k++) {
-      const a = (k / seg) * Math.PI * 2, cx = Math.cos(a), cz = Math.sin(a);
+      const a = (k / seg) * Math.PI * 2, ca = Math.cos(a), sa = Math.sin(a), cx = ca * ex[0] + sa * ez[0], cz = ca * ex[2] + sa * ez[2];
       const nn = norm([cx, slope, cz]);
       p.pos.v3(c[0] + cx * r0, c[1], c[2] + cz * r0);
       p.pos.v3(c[0] + cx * r1, c[1] + h, c[2] + cz * r1);
@@ -209,23 +326,22 @@ export class Batches {
       this.triangles += 2;
     }
     const top: V3 = [c[0], c[1] + h, c[2]];
-    for (let k = 0; k < seg; k++) {
-      const a0 = (k / seg) * Math.PI * 2, a1 = ((k + 1) / seg) * Math.PI * 2;
-      this.tri(m, top, [c[0] + Math.cos(a0) * r1, c[1] + h, c[2] + Math.sin(a0) * r1], [c[0] + Math.cos(a1) * r1, c[1] + h, c[2] + Math.sin(a1) * r1], [0, 1, 0]);
-    }
+    const rim = (a: number): V3 => [c[0] + (Math.cos(a) * ex[0] + Math.sin(a) * ez[0]) * r1, c[1] + h, c[2] + (Math.cos(a) * ex[2] + Math.sin(a) * ez[2]) * r1];
+    for (let k = 0; k < seg; k++) this.tri(m, top, rim((k / seg) * Math.PI * 2), rim(((k + 1) / seg) * Math.PI * 2), [0, 1, 0]);
   }
 
   /** A sphere-ish lantern body (a squashed lathe) at `c`: radius r, height h; UV u round 0..1, v 0..1 down. */
   lantern(m: MeshStandardMaterial, c: V3, r: number, h: number, seg = 16, rings = 10, cu: [number, number] = [0, 1]) {
     const p = this.part(m);
     const base = p.pos.length / 3;
+    const [ex, ez] = this.axes();
     for (let j = 0; j <= rings; j++) {
       const t = j / rings, y = c[1] + h / 2 - t * h;
       // a barrel: full radius at the middle, 70 % at the rims
       const rr = r * (0.7 + 0.3 * Math.sin(Math.PI * t));
       const dr = r * 0.3 * Math.cos(Math.PI * t) * (Math.PI / rings) / (h / rings);
       for (let k = 0; k <= seg; k++) {
-        const a = (k / seg) * Math.PI * 2, cx = Math.cos(a), cz = Math.sin(a);
+        const a = (k / seg) * Math.PI * 2, ca = Math.cos(a), sa = Math.sin(a), cx = ca * ex[0] + sa * ez[0], cz = ca * ex[2] + sa * ez[2];
         p.pos.v3(c[0] + cx * rr, y, c[2] + cz * rr);
         { const q = norm([cx, dr * 0.5, cz]); p.nor.v3(q[0], q[1], q[2]); }
         p.uv.push(cu[0] + (k / seg) * (cu[1] - cu[0]), 1 - t);
@@ -241,6 +357,8 @@ export class Batches {
 
   /** A hanging cable from a to b sagging `sag` m at its middle (a parabola), radius r. */
   wire(m: MeshStandardMaterial, a: V3, b: V3, sag: number, r: number, steps = 12) {
+    // (a step every metre or so: a short drop needs few)
+    steps = Math.min(steps, Math.max(4, Math.ceil(len(sub(b, a)))));
     const pts: V3[] = [];
     for (let i = 0; i <= steps; i++) {
       const t = i / steps;
@@ -248,7 +366,7 @@ export class Batches {
       q[1] -= 4 * sag * t * (1 - t);
       pts.push(q);
     }
-    this.tube(m, pts, r, 5);
+    this.tube(m, pts, r, 4);
   }
 
   /** A flat polygon (a convex or simple ring, triangulated by `tris`) at its points, facing `n`. UVs: x, z in metres. */
@@ -282,7 +400,7 @@ export class Batches {
 
   /** The batches as arrays, one entry per material (baking). */
   entries(): { material: MeshStandardMaterial; positions: Float32Array; normals: Float32Array; uvs: Float32Array; index: Uint32Array }[] {
-    return [...this.parts].filter(([, p]) => p.idx.length).map(([material, p]) => ({ material, positions: p.pos.view(), normals: p.nor.view(), uvs: p.uv.view(), index: p.idx.view() }));
+    return [...this.parts].filter(([, p]) => p.idx.length).map(([material, p]) => ({ material, positions: p.pos.view() as Float32Array, normals: p.nor.view(), uvs: p.uv.view(), index: p.idx.view() }));
   }
 
   /** The meshes, one per material. */
@@ -292,7 +410,7 @@ export class Batches {
       if (!p.idx.length) continue;
       // (the views as they are: setData would copy each array once more)
       const g = new BufferGeometry();
-      g.positions = p.pos.view();
+      g.positions = p.pos.view() as Float32Array;
       g.normals = p.nor.view();
       g.uvs = p.uv.view();
       g.index = p.idx.view();

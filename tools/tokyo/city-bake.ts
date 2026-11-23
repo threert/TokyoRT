@@ -2,11 +2,16 @@
 // two levels — L1 (mid distance: windows, signs, roofs, poles, trees) and L0 (street level: everything) — and written
 // as one binary per cell and level that scene/city.game.ts reads (`readAsset`) and adds as meshes in place.
 //
-//   node --max-old-space-size=16384 tools/tokyo/city-bake.ts [--area=shinjuku] [--only=i_j,...] [--levels=0,1]
-//     -> assets/city/baked/<area>/L<level>/c_<i>_<j>.bin, assets/city/baked/<area>/index.json
+//   node --max-old-space-size=16384 tools/tokyo/city-bake.ts [--area=shinjuku] [--only=i_j,...] [--levels=0,1] [--out=baked]
+//     -> assets/city/<out>/<area>/L<level>/c_<i>_<j>.bin, kit.bin, index.json
 //
-// A cell file: "TKC1", u32 header bytes, the header (JSON: its meshes — material name, vertex and index counts — and
-// its placements), padded to 4 bytes; then per mesh positions (3 x f32), normals (3 x f32), UVs (2 x f32), indices (u32).
+// A cell file: "TKC1", u32 header bytes, the header (JSON: its meshes — material name, vertex and index counts — its
+// placements, and its kit instances — kit piece and count), padded to 4 bytes; then per mesh positions (3 x f32), normals
+// (3 x f32), UVs (2 x f32), indices (u32); then per kit entry its instances' frames (12 x f32 each: the columns of a 3 x 4
+// matrix).
+// The kit (kit.bin, the same layout: "TKK1", its header — per piece its parts, material name, vertex and index counts,
+// and how often it is used — then per part positions, normals, UVs, indices): every repeated element the dressing made (windows, ...), once, in its
+// own frame. A cell holds where its elements stand; the scene places them as instances of the kit's meshes.
 // Derived from PLATEAU / OSM / GSI: ODbL, kept out of git like the tiles.
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -14,6 +19,9 @@ import { decodeTile } from "../city/shared/tileformat.js";
 import { makeSurface } from "../city/shared/decks.js";
 import { repoRoot } from "../lib/paths.ts";
 import { dressDistrict, type HeroData, type Placement } from "../../scene/hero/dress.ts";
+import { Batches, rng, type KitPiece, type V3 } from "../../scene/hero/builder.ts";
+import { STREET_MODELS, streetModel } from "../../scene/hero/street.ts";
+import { propMaterials, aBoard, beerCases, bicycle, scooter, umbrellaStand, vendingMachine } from "../../scene/hero/props.ts";
 import { heroMaterials } from "../../scene/hero/materials.ts";
 
 const arg = (k: string, d: string) => (process.argv.find((a) => a.startsWith(`--${k}=`)) ?? `--${k}=${d}`).split("=")[1];
@@ -26,7 +34,7 @@ const manifest = JSON.parse(readFileSync(join(tilesDir, "manifest.json"), "utf8"
 const t = manifest.terrain, tb = readFileSync(join(tilesDir, t.file));
 const grid = { x0: t.x0, z0: t.z0, step: t.step, w: t.w, h: t.h, data: new Float32Array(tb.buffer, tb.byteOffset, tb.byteLength / 4) };
 const surface = makeSurface(grid, manifest.decks ?? []);
-const outDir = join(repoRoot, "assets/city/baked", area);
+const outDir = join(repoRoot, "assets/city", arg("out", "baked"), area);
 
 // ---------------------------------------------------------------- the area's buildings, props and wires
 type B = HeroData["buildings"][number] & { cx: number; cz: number };
@@ -77,36 +85,170 @@ function cellData(i: number, j: number): HeroData {
   };
 }
 
-function write(file: string, entries: ReturnType<ReturnType<typeof dressDistrict>["batches"]["entries"]>, placements: Placement[]) {
-  const meshes = entries.map((e) => ({ material: e.material.name, v: e.positions.length / 3, i: e.index.length }));
-  const head = Buffer.from(JSON.stringify({ meshes, placements: placements.map((p) => ("m" in p ? { m: p.m, at: p.at.map(r2), ry: +p.ry.toFixed(3), s: +p.s.toFixed(3) } : { p: p.p, v: p.v, at: p.at.map(r2), ry: +p.ry.toFixed(3) })) }));
+// ---------------------------------------------------------------- the kit: every repeated element once
+const kit = new Map<string, { id: number; parts: KitPiece["parts"]; uses: number }>();
+const kitList: KitPiece["parts"][] = [];
+/** A cell's kit instances, by piece: their frames. */
+type Instances = Map<number, number[]>;
+function add(into: Instances, key: string, parts: () => KitPiece["parts"], matrix: number[]) {
+  let k = kit.get(key);
+  if (!k) {
+    k = { id: kitList.length, parts: parts(), uses: 0 };
+    kit.set(key, k);
+    kitList.push(k.parts);
+  }
+  k.uses++;
+  (into.get(k.id) ?? into.set(k.id, []).get(k.id)!).push(...matrix);
+}
+const collect = (into: Instances) => (piece: KitPiece) => add(into, piece.key, () => piece.parts, piece.matrix);
+
+/** A piece a cell has fewer copies of than this, of fewer triangles in all than `MERGE_TRIS`, goes into the cell's
+ *  meshes: each piece placed is an object of the scene's a material, and many objects of a few small copies cost every
+ *  commit more than their triangles would. */
+const MIN_COPIES = 8, MERGE_TRIS = 600;
+const pieceTris = (k: number) => kitList[k].reduce((s, p) => s + p.index.length / 3, 0);
+
+// the street models and props, whole models: a piece each (one per variant), placed where the dressing recorded them
+const parts = (b: Batches): KitPiece["parts"] => b.entries().map((e) => ({ material: e.material, positions: e.positions, normals: e.normals, uvs: e.uvs, index: e.index }));
+const PM = propMaterials(true);
+const PROPS: Record<string, (b: Batches, pm: typeof PM, a: V3, f: V3, r: ReturnType<typeof rng>) => void> = {
+  bike: bicycle, scooter, umbrellas: umbrellaStand, aboard: aBoard, vendingm: vendingMachine,
+  beercases: (b, pm, a, f, r) => beerCases(b, pm, a, f, r, 3),
+};
+/** A placement's frame (turned about y by `ry`, scaled by `s`, at `at`): the columns of a 3 x 4 matrix. */
+const frameOf = (at: V3, ry: number, s = 1) => [Math.cos(ry) * s, 0, -Math.sin(ry) * s, 0, s, 0, Math.sin(ry) * s, 0, Math.cos(ry) * s, at[0], at[1], at[2]];
+/** The placements that are kit pieces into `into`; the rest (trees: glTF files) returned. */
+function placementsToKit(placements: Placement[], into: Instances): Placement[] {
+  const rest: Placement[] = [];
+  for (const p of placements) {
+    if ("m" in p) {
+      if (!(STREET_MODELS as readonly string[]).includes(p.m)) { rest.push(p); continue; }
+      add(into, `model ${p.m}`, () => parts(streetModel(p.m as (typeof STREET_MODELS)[number])), frameOf(p.at, p.ry, p.s));
+    } else {
+      const fn = PROPS[p.p];
+      if (!fn) { rest.push(p); continue; }
+      add(into, `prop ${p.p} ${p.v}`, () => {
+        const b = new Batches();
+        // (the seed the scene's prototypes had)
+        fn(b, PM, [0, 0, 0], [0, 0, 1], rng(11 * 7919 + p.v * 104729 + p.p.length));
+        return parts(b);
+      }, frameOf(p.at, p.ry));
+    }
+  }
+  return rest;
+}
+
+type Entry = { material: { name: string }; positions: Float32Array; normals: Float32Array; uvs: Float32Array; index: Uint32Array };
+/** A cell's pieces placed fewer than `MIN_COPIES` times, into its meshes as they stand. */
+function mergeRare(entries: Entry[], instances: Instances): Entry[] {
+  const add: Map<string, { material: { name: string }; pos: number[]; nor: number[]; uv: number[]; idx: number[] }> = new Map();
+  for (const [k, m] of [...instances]) {
+    const n = m.length / 12;
+    if (n >= MIN_COPIES || n * pieceTris(k) >= MERGE_TRIS) continue;
+    instances.delete(k);
+    for (let c = 0; c < n; c++) {
+      const M = m.slice(c * 12, c * 12 + 12);
+      // (normals by the inverse transpose: each column's share divided by its squared length)
+      const l2 = [0, 3, 6].map((o) => M[o] ** 2 + M[o + 1] ** 2 + M[o + 2] ** 2 || 1);
+      for (const p of kitList[k]) {
+        const e = add.get(p.material.name) ?? add.set(p.material.name, { material: p.material, pos: [], nor: [], uv: [], idx: [] }).get(p.material.name)!;
+        const base = e.pos.length / 3, P = p.positions, N = p.normals;
+        for (let i = 0; i < P.length; i += 3) {
+          const x = P[i], y = P[i + 1], z = P[i + 2];
+          e.pos.push(M[0] * x + M[3] * y + M[6] * z + M[9], M[1] * x + M[4] * y + M[7] * z + M[10], M[2] * x + M[5] * y + M[8] * z + M[11]);
+          const a = N[i] / l2[0], b = N[i + 1] / l2[1], d = N[i + 2] / l2[2];
+          const nx = M[0] * a + M[3] * b + M[6] * d, ny = M[1] * a + M[4] * b + M[7] * d, nz = M[2] * a + M[5] * b + M[8] * d, l = Math.hypot(nx, ny, nz) || 1;
+          e.nor.push(nx / l, ny / l, nz / l);
+        }
+        for (let i = 0; i < p.uvs.length; i++) e.uv.push(p.uvs[i]);
+        for (let i = 0; i < p.index.length; i++) e.idx.push(base + p.index[i]);
+      }
+    }
+  }
+  const out = entries.slice();
+  for (const [name, a] of add) {
+    const i = out.findIndex((e) => e.material.name === name);
+    const was = i >= 0 ? out[i] : { material: a.material, positions: new Float32Array(0), normals: new Float32Array(0), uvs: new Float32Array(0), index: new Uint32Array(0) };
+    const v0 = was.positions.length / 3;
+    const cat = <T extends Float32Array | Uint32Array>(x: T, y: number[], make: (n: number) => T, shift = 0) => { const r = make(x.length + y.length); r.set(x); for (let j = 0; j < y.length; j++) r[x.length + j] = y[j] + shift; return r; };
+    const merged = {
+      material: was.material,
+      positions: cat(was.positions, a.pos, (n) => new Float32Array(n)),
+      normals: cat(was.normals, a.nor, (n) => new Float32Array(n)),
+      uvs: cat(was.uvs, a.uv, (n) => new Float32Array(n)),
+      index: cat(was.index, a.idx, (n) => new Uint32Array(n), v0),
+    };
+    if (i >= 0) out[i] = merged;
+    else out.push(merged);
+  }
+  return out;
+}
+
+function header(magic: string, json: unknown) {
+  const head = Buffer.from(JSON.stringify(json));
   const pad = (4 - ((8 + head.length) % 4)) % 4;
-  const parts: Buffer[] = [Buffer.from("TKC1"), Buffer.alloc(4), head, Buffer.alloc(pad)];
-  parts[1].writeUInt32LE(head.length + pad);
-  for (const e of entries) for (const a of [e.positions, e.normals, e.uvs, e.index]) parts.push(Buffer.from(a.buffer, a.byteOffset, a.byteLength));
+  const out: Buffer[] = [Buffer.from(magic), Buffer.alloc(4), head, Buffer.alloc(pad)];
+  out[1].writeUInt32LE(head.length + pad);
+  return out;
+}
+const bytes = (a: Float32Array | Uint32Array) => Buffer.from(a.buffer, a.byteOffset, a.byteLength);
+
+function write(file: string, entries: Entry[], placements: Placement[], instances: Instances) {
+  const meshes = entries.map((e) => ({ material: e.material.name, v: e.positions.length / 3, i: e.index.length }));
+  const kitIn = [...instances].sort((a, b) => a[0] - b[0]);
+  const parts = header("TKC1", {
+    meshes,
+    placements: placements.map((p) => ("m" in p ? { m: p.m, at: p.at.map(r2), ry: +p.ry.toFixed(3), s: +p.s.toFixed(3) } : { p: p.p, v: p.v, at: p.at.map(r2), ry: +p.ry.toFixed(3) })),
+    kit: kitIn.map(([k, m]) => ({ k, n: m.length / 12 })),
+  });
+  for (const e of entries) for (const a of [e.positions, e.normals, e.uvs, e.index]) parts.push(bytes(a));
+  for (const [, m] of kitIn) parts.push(bytes(new Float32Array(m)));
   const buf = Buffer.concat(parts);
   writeFileSync(file, buf);
-  return { bytes: buf.length, tris: entries.reduce((s, e) => s + e.index.length / 3, 0), placements: placements.length };
+  let kitTris = 0, inst = 0;
+  for (const [k, m] of kitIn) { inst += m.length / 12; kitTris += (m.length / 12) * kitList[k].reduce((s, p) => s + p.index.length / 3, 0); }
+  return { bytes: buf.length, tris: entries.reduce((s, e) => s + e.index.length / 3, 0), placements: placements.length, instances: inst, instancedTris: kitTris };
+}
+
+function writeKit(file: string) {
+  const uses = [...kit.values()].sort((a, b) => a.id - b.id).map((k) => k.uses);
+  const parts = header("TKK1", { pieces: kitList.map((ps) => ps.map((p) => ({ material: p.material.name, v: p.positions.length / 3, i: p.index.length }))), uses });
+  for (const ps of kitList) for (const p of ps) for (const a of [p.positions, p.normals, p.uvs, p.index]) parts.push(bytes(a));
+  const buf = Buffer.concat(parts);
+  writeFileSync(file, buf);
+  return buf.length;
 }
 
 for (const L of levels) mkdirSync(join(outDir, `L${L}`), { recursive: true });
 const indexFile = join(outDir, "index.json");
-let index: { cell: number; cells: Record<string, Record<string, { tris: number; bytes: number; placements: number }>> } = { cell: CELL, cells: {} };
+let index: { cell: number; cells: Record<string, Record<string, { tris: number; bytes: number; placements: number; instances: number; instancedTris: number }>> } = { cell: CELL, cells: {} };
 try { index = JSON.parse(readFileSync(indexFile, "utf8")); } catch { /* new */ }
 const t0 = Date.now();
-let n = 0, tris = [0, 0];
+let n = 0, tris = [0, 0], inst = [0, 0], instTris = [0, 0];
 for (const [i, j] of cells) {
   const key = `${i}_${j}`;
   if (only && !only.includes(key)) continue;
   const data = cellData(i, j);
   for (const L of levels) {
-    const record: Placement[] = [];
-    const d = dressDistrict(data, M, true, 11, { cell: data.box, full: L === 0, record });
-    const r = write(join(outDir, `L${L}`, `c_${key}.bin`), d.batches.entries(), record);
+    const record: Placement[] = [], instances: Instances = new Map();
+    const d = dressDistrict(data, M, true, 11, { cell: data.box, full: L === 0, record, kit: collect(instances) });
+    const rest = placementsToKit(record, instances);
+    const r = write(join(outDir, `L${L}`, `c_${key}.bin`), mergeRare(d.batches.entries(), instances), rest, instances);
     (index.cells[key] ??= {})[`L${L}`] = r;
     tris[L] += r.tris;
+    inst[L] += r.instances;
+    instTris[L] += r.instancedTris;
   }
   if (++n % 25 === 0) console.log(`  ${n} cells, ${((Date.now() - t0) / 1000).toFixed(0)} s`);
 }
+if (only) console.log("(--only: the kit holds those cells' pieces alone; bake every cell before streaming them)");
+{
+  const uses = [...kit.values()].map((k) => k.uses).sort((a, b) => b - a), total = uses.reduce((a, b) => a + b, 0);
+  const at = (n: number) => uses.filter((u) => u >= n).length;
+  console.log(`kit reuse: ${uses.length} pieces for ${total} elements; used >= 2: ${at(2)}, >= 10: ${at(10)}, >= 100: ${at(100)}; top ${uses.slice(0, 5).join(" ")}`);
+}
+const kitBytes = writeKit(join(outDir, "kit.bin"));
+const kitTris = kitList.reduce((s, ps) => s + ps.reduce((t, p) => t + p.index.length / 3, 0), 0);
 writeFileSync(indexFile, JSON.stringify(index));
+console.log(`kit: ${kitList.length} pieces, ${(kitTris / 1e6).toFixed(2)} M triangles, ${(kitBytes / 1e6).toFixed(1)} MB; placed L0 ${(inst[0] / 1e3).toFixed(0)} k (${(instTris[0] / 1e6).toFixed(1)} M triangles), L1 ${(inst[1] / 1e3).toFixed(0)} k (${(instTris[1] / 1e6).toFixed(1)} M)`);
 console.log(`${area}: ${n} cells baked (L0 ${(tris[0] / 1e6).toFixed(1)} M, L1 ${(tris[1] / 1e6).toFixed(1)} M triangles) in ${((Date.now() - t0) / 1000).toFixed(0)} s -> ${outDir}`);

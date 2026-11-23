@@ -11,7 +11,6 @@ npm ci --no-audit --no-fund
 (cd engine/renderer && cargo build --release)
 # the materials, street furniture and trees, generated (no scanned or photographed assets)
 node tools/tokyo/surfaces.ts
-node tools/tokyo/street-models.ts
 npm run trees
 # the city: PLATEAU, OpenStreetMap and GSI, compiled into 256 m tiles (tools/city, from jeantimex/tokyo)
 node tools/tokyo/prefetch-plateau.mjs --area="$AREA"

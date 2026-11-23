@@ -4,27 +4,31 @@
 //   - L1, mid distance (within R1): each 128 m cell dressed (windows, signs, roofs, poles, trees), baked by
 //     tools/tokyo/city-bake.ts and read with `readAsset`;
 //   - L0, street level (within R0): the same cells dressed in full (doors, shops, clutter, wires, props).
-// A cell's level arrives as meshes added in place (hidden), a frame budget of triangles at a time, and shows whole when
-// it is complete; the level it replaces goes then.
+// What repeats (windows, gratings, street models, props) is the kit's (kit.bin): each piece's geometry once, a cell's
+// copies of it one instanced mesh a material. A cell's level arrives in place, a frame budget at a time (its meshes,
+// its trees, its kit pieces, then what emits, together); the level it replaces goes when it is complete.
 //
 // Room id: "tokyo-night" | "tokyo-day" | "tokyo-dusk", with "-at=x,z" or "-at=x,y,z" (where to start; the first cells
 // load with the scene), "-look=yaw,pitch" (degrees) and "-tour" (the camera flies a set path: clips and benchmarks).
 // Controls (pointer "look": click to capture, Esc to let go): mouse to look, W A S D to move, Space / E up, C / Q down,
 // Shift faster, the wheel scales the speed. T cycles day/dusk/night, or 1/2/3 selects a preset; M switches the
 // denoiser (MetalFX / ThreeRT; room suffix "-builtin" starts with ThreeRT's).
-import { DirectionalLight, GLTFModel, Group, Mesh, MaterialFunction, MeshStandardMaterial, readAsset, rendering, PerspectiveCamera, PlaneGeometry, Scene, SurfaceMaterial, BufferGeometry, wetLayer, type Object3D } from "@threert/scene";
+import { DirectionalLight, GLTFModel, Group, Mesh, MaterialFunction, MeshStandardMaterial, readAsset, rendering, PerspectiveCamera, InstancedMesh, PlaneGeometry, Scene, SurfaceMaterial, BufferGeometry, wetLayer, type Object3D } from "@threert/scene";
 import { defineGame, type FrameContext } from "@threert/gameplay";
 import { tokyoSky } from "./sky.ts";
 import { finishMap } from "./hero/finish.ts";
 import { heroMaterials } from "./hero/materials.ts";
-import { propMaterials, aBoard, beerCases, bicycle, scooter, umbrellaStand, vendingMachine } from "./hero/props.ts";
+import { propMaterials } from "./hero/props.ts";
+import { streetMaterials } from "./hero/street.ts";
 import { MODELS } from "./hero/dress.ts";
 import { SHOP_PAGES } from "./hero/shops.ts";
-import { Batches, rng, type V3 } from "./hero/builder.ts";
+import type { V3 } from "./hero/builder.ts";
 import far from "../assets/city/glb/shinjuku-far/index.json";
 import baked from "../assets/city/baked/shinjuku/index.json";
 
 const AREA = "shinjuku";
+/** The baked cells and their kit (tools/tokyo/city-bake.ts). */
+const BAKED = `assets/city/baked/${AREA}`;
 const CELL = 128;
 /** Level radii (m, from the camera to the cell's box) and the margin a level is kept beyond them. */
 const R0 = 140, R1 = 480, KEEP = 50;
@@ -34,7 +38,7 @@ const FRAME_TRIS = 50_000, FRAME_MS = 5, FRAME_OBJECTS = 30;
 /** A cell: the level it shows and the group that holds it (two for L0: a time-of-day change loads the cell again
  *  in the other one while this one shows), the night its L0 was made for, the level loading. */
 type Cell = { i: number; j: number; level: number; roots: [Group, Group, Group]; shown: Group | null; night: boolean; loading: Job | null };
-type Job = { level: number; night: boolean; path: string; meshes: { material: string; v: number; i: number; at: number; emits: boolean }[]; placements: Placement[]; off: number; k: number; p: number; root: Group };
+type Job = { level: number; night: boolean; path: string; meshes: { material: string; v: number; i: number; at: number; emits: boolean }[]; placements: Placement[]; kit: { k: number; n: number; at: number }[]; kitLit: { k: number; n: number; at: number }[]; off: number; k: number; p: number; q: number; root: Group };
 type Placement = { m: string; at: V3; ry: number; s: number } | { p: string; v: number; at: V3; ry: number };
 
 const engine = { readAsset };
@@ -92,8 +96,6 @@ let sun: DirectionalLight;
 // cell a light-tree update. (So a change between night and day loads the near cells again, the nearest first.)
 const dayOf = new Map<MeshStandardMaterial, MeshStandardMaterial>();
 const lit = (m: MeshStandardMaterial) => (time === "night" ? m : dayOf.get(m) ?? m);
-let PM: ReturnType<typeof propMaterials>;
-const protos = new Map<string, Mesh[]>();
 const cells = new Map<string, Cell>();
 /** Far objects by tile and quadrant: buildings (with their lit windows and signs) and trees. */
 type FarQuadrant = { covered: boolean; base: GLTFModel | null; lights: GLTFModel | null };
@@ -109,7 +111,7 @@ function ascii(b: Uint8Array) {
 
 /** A cell's level: its header now, its meshes a few at a time (ranged reads: the rest of the file is not read yet). */
 function startJob(c: Cell, level: number): Job | null {
-  const path = `assets/city/baked/${AREA}/L${level}/c_${c.i}_${c.j}.bin`;
+  const path = `${BAKED}/L${level}/c_${c.i}_${c.j}.bin`;
   let n: number;
   try {
     n = new DataView(engine.readAsset(path, 0, 8)).getUint32(4, true);
@@ -125,7 +127,9 @@ function startJob(c: Cell, level: number): Job | null {
   let off = 8 + n;
   const meshes = (head.meshes as { material: string; v: number; i: number }[]).map((m) => { const at = off; off += m.v * 32 + m.i * 4; return { ...m, at, emits: emits(lib.get(m.material)) }; });
   meshes.sort((a, b) => Number(a.emits) - Number(b.emits));
-  return { level, night: time === "night", path, meshes, placements: head.placements, off: 8 + n, k: 0, p: 0, root };
+  // (its kit instances after the meshes: 12 floats each)
+  const kit = ((head.kit ?? []) as { k: number; n: number }[]).map((e) => { const at = off; off += e.n * 48; return { ...e, at }; });
+  return { level, night: time === "night", path, meshes, placements: head.placements, kit, kitLit: [], off: 8 + n, k: 0, p: 0, q: 0, root };
 }
 
 /** Adds the job's next meshes and placements within the frame's budget (they show as they come: for a few frames the
@@ -134,7 +138,12 @@ function step(job: Job, budget: { tris: number; until: number; objects: number }
   while (job.k < job.meshes.length && (budget.tris > 0 && Date.now() < budget.until || job.meshes[job.k].emits)) {
     const m = job.meshes[job.k];
     // (the emitting ones wait until the rest are in, then go together)
-    if (m.emits && (job.k === 0 || !job.meshes[job.k - 1].emits) && job.p < job.placements.length) break;
+    if (m.emits && (job.k === 0 || !job.meshes[job.k - 1].emits) && (job.p < job.placements.length || job.q < job.kit.length)) break;
+    // (and with them the kit's that emit)
+    if (m.emits && (job.k === 0 || !job.meshes[job.k - 1].emits) && job.kitLit.length) {
+      for (const e of job.kitLit) addKit(job, e);
+      job.kitLit = [];
+    }
     job.k++;
     const bytes = m.v * 32 + m.i * 4;
     const buf = engine.readAsset(job.path, m.at, bytes);
@@ -157,43 +166,108 @@ function step(job: Job, budget: { tris: number; until: number; objects: number }
     for (const o of place(job.placements[job.p++])) job.root.add(o);
     n++;
   }
-  return job.k >= job.meshes.length && job.p >= job.placements.length;
+  // the kit's pieces where the cell has them: one object per piece and material, its copies instances (those that
+  // emit kept for the frame the cell's emitters go in)
+  while (job.p >= job.placements.length && job.q < job.kit.length && n < budget.objects && Date.now() < budget.until) {
+    const e = job.kit[job.q++];
+    const piece = kitPiece(e.k);
+    if (!piece) continue;
+    if (piece.some((part) => emits(part.material))) {
+      job.kitLit.push(e);
+      continue;
+    }
+    n += addKit(job, e);
+    budget.tris -= e.n * 4;
+  }
+  // (a cell without emitting meshes: the kit's that emit now)
+  if (job.q >= job.kit.length && job.k >= job.meshes.length && job.kitLit.length) {
+    for (const e of job.kitLit) addKit(job, e);
+    job.kitLit = [];
+  }
+  return job.k >= job.meshes.length && job.p >= job.placements.length && job.q >= job.kit.length && !job.kitLit.length;
 }
 
-const PROPS: Record<string, (b: Batches, pm: ReturnType<typeof propMaterials>, a: V3, f: V3, r: ReturnType<typeof rng>) => void> = {
-  bike: bicycle, scooter, umbrellas: umbrellaStand, aboard: aBoard, vendingm: vendingMachine,
-  beercases: (b, pm, a, f, r) => beerCases(b, pm, a, f, r, 3),
-};
+/** A kit entry of a cell's: its copies' frames read, an instanced mesh per material of the piece. The objects made. */
+function addKit(job: Job, e: Job["kit"][number]) {
+  const piece = kitPiece(e.k);
+  if (!piece) return 0;
+  {
+    const src = new Float32Array(engine.readAsset(job.path, e.at, e.n * 48));
+    const m = new Float32Array(e.n * 16);
+    for (let i = 0; i < e.n; i++) {
+      const a = i * 12, o = i * 16;
+      m[o] = src[a]; m[o + 1] = src[a + 1]; m[o + 2] = src[a + 2];
+      m[o + 4] = src[a + 3]; m[o + 5] = src[a + 4]; m[o + 6] = src[a + 5];
+      m[o + 8] = src[a + 6]; m[o + 9] = src[a + 7]; m[o + 10] = src[a + 8];
+      m[o + 12] = src[a + 9]; m[o + 13] = src[a + 10]; m[o + 14] = src[a + 11]; m[o + 15] = 1;
+    }
+    // (one object a material: an instanced mesh draws with one; by level and time as the cells' meshes are)
+    for (const part of piece) {
+      const inst = new InstancedMesh(part.geometry, job.level === 1 ? midOf.get(part.material) ?? part.material : lit(part.material), e.n);
+      inst.instanceMatrix.array.set(m);
+      job.root.add(inst);
+    }
+    return piece.length;
+  }
+}
 
-/** A placement as objects: a model (one object), or a prop's meshes (one a material; a new group cannot be added in
- *  place, meshes can), each turned and moved to the place. */
-function place(p: Placement): Object3D[] {
-  if ("m" in p) {
-    const m = MODELS[p.m];
-    if (!m) return [];
-    const model = new GLTFModel(m.uri);
-    model.position.set(...p.at);
-    model.rotation.y = p.ry;
-    model.scale.setScalar(p.s);
-    return [model];
+// ---------------------------------------------------------------- the kit: repeated elements, one mesh each
+/** The kit's pieces as the file lists them (their parts' materials and sizes, where their data is), and the geometry of
+ *  those a cell has placed (one geometry each, a group per material: every copy of it in every cell shares it). */
+let kitIndex: { parts: { material: string; v: number; i: number }[]; at: number }[] = [];
+const kitMade = new Map<number, { geometry: BufferGeometry; material: MeshStandardMaterial }[] | null>();
+function loadKit() {
+  const path = `${BAKED}/kit.bin`;
+  let n: number;
+  try {
+    n = new DataView(engine.readAsset(path, 0, 8)).getUint32(4, true);
+  } catch {
+    kitIndex = [];
+    return;
   }
-  const fn = PROPS[p.p];
-  if (!fn) return [];
-  const k = `${p.p} ${p.v}`;
-  let ms = protos.get(k);
-  if (!ms) {
-    const b = new Batches();
-    fn(b, PM, [0, 0, 0], [0, 0, 1], rng(11 * 7919 + p.v * 104729 + p.p.length));
-    ms = b.meshes(k);
-    protos.set(k, ms);
-  }
-  return ms.map((m) => {
-    const o = m.clone();
-    o.material = lit(o.material as MeshStandardMaterial);
-    o.position.set(...p.at);
-    o.rotation.y = p.ry;
-    return o;
+  const head = JSON.parse(ascii(new Uint8Array(engine.readAsset(path, 8, n)))) as { pieces: { material: string; v: number; i: number }[][] };
+  let off = 8 + n;
+  kitIndex = head.pieces.map((parts) => {
+    const at = off;
+    for (const p of parts) off += p.v * 32 + p.i * 4;
+    return { parts, at };
   });
+}
+function kitPiece(k: number) {
+  if (kitMade.has(k)) return kitMade.get(k)!;
+  const e = kitIndex[k];
+  let made: { geometry: BufferGeometry; material: MeshStandardMaterial }[] | null = null;
+  if (e) {
+    const buf = engine.readAsset(`${BAKED}/kit.bin`, e.at, e.parts.reduce((s, p) => s + p.v * 32 + p.i * 4, 0));
+    made = [];
+    let o = 0;
+    for (const p of e.parts) {
+      const material = lib.get(p.material);
+      if (material) {
+        const g = new BufferGeometry();
+        g.positions = new Float32Array(buf, o, p.v * 3);
+        g.normals = new Float32Array(buf, o + p.v * 12, p.v * 3);
+        g.uvs = new Float32Array(buf, o + p.v * 24, p.v * 2);
+        g.index = new Uint32Array(buf, o + p.v * 32, p.i);
+        made.push({ geometry: g, material });
+      }
+      o += p.v * 32 + p.i * 4;
+    }
+  }
+  kitMade.set(k, made);
+  return made;
+}
+
+/** A placement (a tree: the street models and props are the kit's) as its model, turned and moved to the place. */
+function place(p: Placement): Object3D[] {
+  if (!("m" in p)) return [];
+  const m = MODELS[p.m];
+  if (!m) return [];
+  const model = new GLTFModel(m.uri);
+  model.position.set(...p.at);
+  model.rotation.y = p.ry;
+  model.scale.setScalar(p.s);
+  return [model];
 }
 
 function emits(m?: MeshStandardMaterial) {
@@ -320,6 +394,7 @@ function collectMaterials(M: ReturnType<typeof heroMaterials>, P: ReturnType<typ
   collect(M);
   collect(P);
   for (let p = 0; p < SHOP_PAGES; p++) collect(M.shop(p));
+  collect(streetMaterials());
   return materials;
 }
 
@@ -360,9 +435,9 @@ export function sceneFor(room: string) {
   const look = /-look=(-?[\d.]+),(-?[\d.]+)/.exec(room);
   cells.clear();
   farQ.clear();
-  protos.clear();
   dayOf.clear();
   midOf.clear();
+  kitMade.clear();
   retiring.length = 0;
   scene = new Scene();
   sun = new DirectionalLight(0xfff4e8, 100000);
@@ -399,8 +474,7 @@ export function sceneFor(room: string) {
     }
   }
   // the library: every material and model the baked cells use, in the scene from the start (so cells add in place)
-  PM = propMaterials(true);
-  lib = collectMaterials(heroMaterials(true), PM);
+  lib = collectMaterials(heroMaterials(true), propMaterials(true));
   const daylight = collectMaterials(heroMaterials(false), propMaterials(false));
   for (const m of [...lib.values()]) {
     // (rooms behind windows, lit by night or not: their daylight look)
@@ -445,12 +519,11 @@ export function sceneFor(room: string) {
     s.position.set(b.minX + (k++ % 50) * 0.1, -50, b.minZ);
     scene.add(s);
   }
-  // every prop's variants built now (their builders make materials of their own: new textured materials later would
-  // rebuild the scene), one of each placed out of sight
-  const VARIANTS: Record<string, number> = { bike: 8, scooter: 4, umbrellas: 4, aboard: 4, vendingm: 6, beercases: 6 };
-  for (const [kind, n] of Object.entries(VARIANTS)) for (let v = 0; v < n; v++) {
-    for (const o of place({ p: kind, v, at: [b.minX + 10 + v * 3, -80, b.minZ + Object.keys(VARIANTS).indexOf(kind) * 3], ry: 0 })) scene.add(o);
-  }
+  // the kit's index, and an instanced mesh from the start (the scene's first one rebuilds it: not while streaming)
+  loadKit();
+  const firstCopies = new InstancedMesh(swatch, lib.values().next().value!, 1);
+  firstCopies.position.set(b.minX, -55, b.minZ);
+  scene.add(firstCopies);
   for (const [key, m] of Object.entries(MODELS)) {
     const g = new GLTFModel(m.uri);
     g.position.set(b.minX, -60 - Object.keys(MODELS).indexOf(key) * 5, b.minZ);
