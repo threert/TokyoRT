@@ -20,6 +20,7 @@ import { finishMap } from "./hero/finish.ts";
 import { heroMaterials } from "./hero/materials.ts";
 import { propMaterials } from "./hero/props.ts";
 import { streetMaterials } from "./hero/street.ts";
+import { streetPropMaterials } from "./hero/streetprops.ts";
 import { MODELS } from "./hero/dress.ts";
 import { SHOP_PAGES } from "./hero/shops.ts";
 import type { V3 } from "./hero/builder.ts";
@@ -106,12 +107,12 @@ fn tk_noise(p: vec2<f32>) -> f32 {
     // (the face's own plane: the ground's xz, a hedge side's along-and-up)
     let side = vec3<f32>(i.ng.z, 0.0, -i.ng.x);
     let q = select(vec2<f32>(dot(i.wp, side), i.wp.y), i.wp.xz, abs(i.ng.y) > 0.5);
-    let clump = tk_noise(q * 1.3) * 0.65 + tk_noise(q * 3.1) * 0.35;
-    let leaf = tk_noise(q * 14.0);
-    let e = 0.05;
-    let dx = tk_noise((q + vec2<f32>(e, 0.0)) * 14.0) - leaf;
-    let dy = tk_noise((q + vec2<f32>(0.0, e)) * 14.0) - leaf;
-    let tone = (0.45 + 0.55 * clump) * (0.7 + 0.45 * leaf);
+    let clump = tk_noise(q * 0.9) * 0.6 + tk_noise(q * 2.3) * 0.4;
+    let leaf = tk_noise(q * 47.0) * 0.6 + tk_noise(q * 113.0) * 0.4;
+    let e = 0.01;
+    let dx = tk_noise((q + vec2<f32>(e, 0.0)) * 47.0) - tk_noise(q * 47.0);
+    let dy = tk_noise((q + vec2<f32>(0.0, e)) * 47.0) - tk_noise(q * 47.0);
+    let tone = (0.7 + 0.3 * clump) * (0.86 + 0.22 * leaf);
     let yellow = smoothstep(0.55, 0.95, tk_noise(q * 0.4 + vec2<f32>(7.3, 1.9)));
     o.base = o.base * 0.68 * tone * mix(vec3<f32>(1.0), vec3<f32>(1.25, 1.15, 0.75), yellow * 0.5);
     o.roughness = 0.85;
@@ -419,7 +420,7 @@ function tourAt(t: number): { pos: V3; yaw: number } {
 
 // ---------------------------------------------------------------- the scene
 let tour = false;
-function collectMaterials(M: ReturnType<typeof heroMaterials>, P: ReturnType<typeof propMaterials>) {
+function collectMaterials(M: ReturnType<typeof heroMaterials>, P: ReturnType<typeof propMaterials>, night: boolean) {
   const materials = new Map<string, MeshStandardMaterial>();
   const collect = (v: unknown, depth = 0) => {
     if (v instanceof MeshStandardMaterial) { if (!materials.has(v.name)) materials.set(v.name, v); return; }
@@ -430,6 +431,7 @@ function collectMaterials(M: ReturnType<typeof heroMaterials>, P: ReturnType<typ
   collect(P);
   for (let p = 0; p < SHOP_PAGES; p++) collect(M.shop(p));
   collect(streetMaterials());
+  collect(streetPropMaterials(night));
   return materials;
 }
 
@@ -496,7 +498,7 @@ export function sceneFor(room: string) {
   // the ground of every tile: its roads in generated asphalt and pavers, wet by night
   const tex = (id: string, size: number) => { const t = finishMap(id, "color"); t.repeat = [1 / size, 1 / size]; return t; };
   const road = (id: string, size: number, puddles: number) => new SurfaceMaterial({ map: tex(id, size), normalMap: finishMap(id, "normal"), roughnessMap: finishMap(id, "rough"), worldScale: size, wet: 1, puddles: { scale: 2.5, amount: puddles }, grime: { amount: 0.3, scale: 3 } });
-  const functions = { "road 0 ": road("asphalt", 3.5, 0.45).shader!, "road 1 ": road("pavers", 1.6, 0.2).shader!, "road 2 ": foliage, "road 3 ": road("concrete-worn", 2.5, 0.2).shader!, paint: wetLayer({ puddles: 0.4 }) };
+  const functions = { "road 0 ": road("asphalt", 3.5, 0.2).shader!, "road 1 ": road("pavers", 1.6, 0.12).shader!, "road 2 ": foliage, "road 3 ": road("concrete-worn", 2.5, 0.12).shader!, paint: wetLayer({ puddles: 0.4 }) };
   for (const t of far.tiles) {
     const uri = `assets/city/glb/${AREA}-far/${t.file}`;
     scene.add(new GLTFModel(uri, { nodes: ["ground"], functions }));
@@ -519,8 +521,8 @@ export function sceneFor(room: string) {
     }
   }
   // the library: every material and model the baked cells use, in the scene from the start (so cells add in place)
-  lib = collectMaterials(heroMaterials(true), propMaterials(true));
-  const daylight = collectMaterials(heroMaterials(false), propMaterials(false));
+  lib = collectMaterials(heroMaterials(true), propMaterials(true), true);
+  const daylight = collectMaterials(heroMaterials(false), propMaterials(false), false);
   for (const m of [...lib.values()]) {
     // (rooms behind windows, lit by night or not: their daylight look)
     const room = m.name.startsWith("room ") ? (m.name.includes("shop") ? ROOM_DAY.shop : ROOM_DAY.room) : 0;
@@ -539,10 +541,13 @@ export function sceneFor(room: string) {
       d.emissiveIntensity = 0;
       d.shader = midGlow.with({ ...params, IsNight: 0 }, glow ? { Glow: glow } : {});
       dayOf.set(m, d);
-    } else if (day !== k) {
+    } else if (day !== k || day > 0) {
+      // (by day what still glows, a sign, a signal, a vending machine's front, shows its glow and is no light: in the
+      // sun it would light nothing one could see, and every cell streamed in with lights updates the light tree)
       const d = m.clone();
       d.name = `${m.name} ~day`;
-      d.emissiveIntensity = day;
+      d.emissiveIntensity = 0;
+      if (day > 0) d.shader = midGlow.with({ ...params, IsNight: 0 }, glow ? { Glow: glow } : {});
       dayOf.set(m, d);
     }
     const mid = m.clone();

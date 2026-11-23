@@ -21,6 +21,8 @@ import { repoRoot } from "../lib/paths.ts";
 import { dressDistrict, type HeroData, type Placement } from "../../scene/hero/dress.ts";
 import { Batches, rng, type KitPiece, type V3 } from "../../scene/hero/builder.ts";
 import { STREET_MODELS, streetModel } from "../../scene/hero/street.ts";
+import { LIFT, streetPropParts } from "../../scene/hero/streetprops.ts";
+import { PROP } from "../city/shared/tileformat.js";
 import { propMaterials, aBoard, beerCases, bicycle, scooter, umbrellaStand, vendingMachine } from "../../scene/hero/props.ts";
 import { heroMaterials } from "../../scene/hero/materials.ts";
 
@@ -138,6 +140,19 @@ function placementsToKit(placements: Placement[], into: Instances): Placement[] 
   return rest;
 }
 
+/** The city's own street furniture in a cell (street lights, signals, parked cars; utility poles at mid distance, which
+ *  the street level draws itself), as the far level has it: its models as kit pieces where the compiled props stand. */
+function streetPropsToKit(i: number, j: number, level: number, into: Instances) {
+  const x0 = i * CELL, z0 = j * CELL;
+  for (const p of props) {
+    if (p.x < x0 || p.x >= x0 + CELL || p.z < z0 || p.z >= z0 + CELL) continue;
+    if (!(p.kind === PROP.LIGHT || p.kind === PROP.SIGNAL || p.kind === PROP.PARKED || (p.kind === PROP.POLE && level === 1))) continue;
+    const parts = streetPropParts(p.kind, p.variant);
+    if (!parts) continue;
+    add(into, `street prop ${p.kind} ${p.variant}`, () => parts, frameOf([p.x, surface(p.x, p.z) + (LIFT[p.kind] ?? 0), p.z], p.rot, p.scale || 1));
+  }
+}
+
 type Entry = { material: { name: string }; positions: Float32Array; normals: Float32Array; uvs: Float32Array; index: Uint32Array };
 /** A cell's pieces placed fewer than `MIN_COPIES` times, into its meshes as they stand. */
 function mergeRare(entries: Entry[], instances: Instances): Entry[] {
@@ -233,6 +248,7 @@ for (const [i, j] of cells) {
     const record: Placement[] = [], instances: Instances = new Map();
     const d = dressDistrict(data, M, true, 11, { cell: data.box, full: L === 0, record, kit: collect(instances) });
     const rest = placementsToKit(record, instances);
+    streetPropsToKit(i, j, L, instances);
     const r = write(join(outDir, `L${L}`, `c_${key}.bin`), mergeRare(d.batches.entries(), instances), rest, instances);
     (index.cells[key] ??= {})[`L${L}`] = r;
     tris[L] += r.tris;
