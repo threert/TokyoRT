@@ -84,6 +84,40 @@ const farSigns = new MaterialFunction("TokyoFarSign", {
     o.base = paper; o.emissive = paper * 20.0; o.specular = 0.5;
   }`,
 }).with();
+// Lawns and hedges (the far ground's grass layer: one colour each, as compiled): leaves. Clumps of light and dark,
+// small leaves over them, a bumped surface; a third darker than the compiled colour, which read as painted plastic.
+const foliage = new MaterialFunction("TokyoFoliage", {
+  helpers: `
+fn tk_hash(x: i32, y: i32) -> f32 {
+    var v = (bitcast<u32>(x) * 73856093u) ^ (bitcast<u32>(y) * 19349663u);
+    v = v * 747796405u + 2891336453u;
+    v = ((v >> ((v >> 28u) + 4u)) ^ v) * 277803737u;
+    return f32((v >> 22u) ^ v) * (1.0 / 4294967296.0);
+}
+fn tk_noise(p: vec2<f32>) -> f32 {
+    let c = floor(p);
+    let f = p - c;
+    let u = f * f * (3.0 - 2.0 * f);
+    let x = i32(c.x);
+    let y = i32(c.y);
+    return mix(mix(tk_hash(x, y), tk_hash(x + 1, y), u.x), mix(tk_hash(x, y + 1), tk_hash(x + 1, y + 1), u.x), u.y);
+}`,
+  code: `
+    // (the face's own plane: the ground's xz, a hedge side's along-and-up)
+    let side = vec3<f32>(i.ng.z, 0.0, -i.ng.x);
+    let q = select(vec2<f32>(dot(i.wp, side), i.wp.y), i.wp.xz, abs(i.ng.y) > 0.5);
+    let clump = tk_noise(q * 1.3) * 0.65 + tk_noise(q * 3.1) * 0.35;
+    let leaf = tk_noise(q * 14.0);
+    let e = 0.05;
+    let dx = tk_noise((q + vec2<f32>(e, 0.0)) * 14.0) - leaf;
+    let dy = tk_noise((q + vec2<f32>(0.0, e)) * 14.0) - leaf;
+    let tone = (0.45 + 0.55 * clump) * (0.7 + 0.45 * leaf);
+    let yellow = smoothstep(0.55, 0.95, tk_noise(q * 0.4 + vec2<f32>(7.3, 1.9)));
+    o.base = o.base * 0.68 * tone * mix(vec3<f32>(1.0), vec3<f32>(1.25, 1.15, 0.75), yellow * 0.5);
+    o.roughness = 0.85;
+    o.specular = 0.35;
+    o.normal = tangent_normal(i, normalize(vec3<f32>(-dx * 6.0, -dy * 6.0, 1.0)));`,
+}).with();
 const TIMES = {
   day: { elevation: 38, azimuth: 247.5, ev: 11.5 },
   dusk: { elevation: 3, azimuth: 250, ev: 8.5 },
@@ -462,7 +496,7 @@ export function sceneFor(room: string) {
   // the ground of every tile: its roads in generated asphalt and pavers, wet by night
   const tex = (id: string, size: number) => { const t = finishMap(id, "color"); t.repeat = [1 / size, 1 / size]; return t; };
   const road = (id: string, size: number, puddles: number) => new SurfaceMaterial({ map: tex(id, size), normalMap: finishMap(id, "normal"), roughnessMap: finishMap(id, "rough"), worldScale: size, wet: 1, puddles: { scale: 2.5, amount: puddles }, grime: { amount: 0.3, scale: 3 } });
-  const functions = { "road 0 ": road("asphalt", 3.5, 0.45).shader!, "road 1 ": road("pavers", 1.6, 0.2).shader!, "road 3 ": road("concrete-worn", 2.5, 0.2).shader!, paint: wetLayer({ puddles: 0.4 }) };
+  const functions = { "road 0 ": road("asphalt", 3.5, 0.45).shader!, "road 1 ": road("pavers", 1.6, 0.2).shader!, "road 2 ": foliage, "road 3 ": road("concrete-worn", 2.5, 0.2).shader!, paint: wetLayer({ puddles: 0.4 }) };
   for (const t of far.tiles) {
     const uri = `assets/city/glb/${AREA}-far/${t.file}`;
     scene.add(new GLTFModel(uri, { nodes: ["ground"], functions }));

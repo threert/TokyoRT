@@ -127,6 +127,13 @@ export function heroMaterials(night: boolean) {
   // glass: clear panes in front of the rooms, and frosted ones
   const glass = new MeshPhysicalMaterial({ name: "glass", color: 0xffffff, roughness: 0.02, metalness: 0, transmission: 1, ior: 1.5 });
   const frosted = new MeshPhysicalMaterial({ name: "glass frosted", color: 0xc9ccca, roughness: 0.3, metalness: 0, transmission: 1, ior: 1.5 });
+  // the towers' curtain walls: tinted vision glass (green, blue, bronze), the spandrel panels at each slab (coated glass
+  // or enamelled metal, reflective), the mullion fins; the roof's helipad paint and the red aviation lights
+  const curtainGlass = [0xb7cfc8, 0xb3c3d6, 0xd4c6b2].map((c, i) => new MeshPhysicalMaterial({ name: `glass curtain ${i}`, color: c, roughness: 0.02, metalness: 0, transmission: 1, ior: 1.5 }));
+  const spandrels = [0x22313a, 0x2a3a33, 0x8f969c, 0x3a2f27].map((c, i) => new MeshStandardMaterial({ name: `spandrel ${i}`, color: c, roughness: 0.08, metalness: 0.85 }));
+  const helipadPaint = new MeshStandardMaterial({ name: "helipad paint", color: 0x40564a, roughness: 0.8 });
+  const helipadWhite = new MeshStandardMaterial({ name: "helipad white", color: 0xe8e8e2, roughness: 0.6 });
+  const aviation = new MeshStandardMaterial({ name: "aviation light", color: 0x8a1810, roughness: 0.3, emissive: 0xff2010, emissiveIntensity: night ? 4000 : 0 });
 
   // what lights: rooms behind the glass, signs, lanterns, bulbs (nits; zero by day except signs a little)
   const k = night ? 1 : 0;
@@ -188,6 +195,6 @@ export function heroMaterials(night: boolean) {
     shop, roofs, roofsSmall,
     walls, wallWeights, bigWalls, plinth, coping, roof, ground, groundB, gutter, grate, doorWood, shutter, shutterPainted, corrugatedEave, rustyMetal,
     aluminium, aluminiumDark, steelDark, paintMetal, pvc, pvcDark, cable, cableGrey, concretePole, insulator, transformer,
-    glass, frosted, roomLit, roomDim, roomDark, rooms, neon, trims, frames, frameWhite, frameBlack, roomBar, roomShop, roomOffice, tank, laundry, notices, gasPipe, signBox, signBlade, lanternPaper, norenCloth, poster, signFrame, bulb, globe, vending, vendingBody,
+    glass, frosted, curtainGlass, spandrels, helipadPaint, helipadWhite, aviation, roomLit, roomDim, roomDark, rooms, neon, trims, frames, frameWhite, frameBlack, roomBar, roomShop, roomOffice, tank, laundry, notices, gasPipe, signBox, signBlade, lanternPaper, norenCloth, poster, signFrame, bulb, globe, vending, vendingBody,
   };
 }

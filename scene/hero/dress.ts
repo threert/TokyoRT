@@ -159,14 +159,23 @@ export function dressDistrict(data: HeroData, M: Mats, night: boolean, seed = 11
       else grid.set(k, [b]);
     }
   }
+  /** The top of the highest building at (x, z) but `skip` (-Infinity: none). */
+  const topAt = (x: number, z: number, skip?: Bldg) => {
+    let t = -Infinity;
+    for (const b of grid.get(key(Math.floor(x / CELL), Math.floor(z / CELL))) ?? []) {
+      if (b !== skip && x >= b.bb[0] - 0.01 && x <= b.bb[2] + 0.01 && z >= b.bb[1] - 0.01 && z <= b.bb[3] + 0.01 && inside(b.pts, x, z)) t = Math.max(t, b.base + b.height);
+    }
+    return t;
+  };
   const inAny = (x: number, z: number, skip?: Bldg) => (grid.get(key(Math.floor(x / CELL), Math.floor(z / CELL))) ?? []).some((b) => b !== skip && x >= b.bb[0] - 0.01 && x <= b.bb[2] + 0.01 && z >= b.bb[1] - 0.01 && z <= b.bb[3] + 0.01 && inside(b.pts, x, z));
   const [bx0, bz0, bx1, bz1] = data.hero ?? data.box;
   const inBox = ab.full !== undefined ? () => !!ab.full : (x: number, z: number) => x >= bx0 && x <= bx1 && z >= bz0 && z <= bz1;
   const inCell = (x: number, z: number) => !ab.cell || (x >= ab.cell[0] && x < ab.cell[2] && z >= ab.cell[1] && z < ab.cell[3]);
   const centroid = (b: Bldg) => { let x = 0, z = 0; for (const [px, pz] of b.pts) { x += px; z += pz; } return [x / b.pts.length, z / b.pts.length] as const; };
 
-  /** Exposed edges: walls that face an open alley (the space 1.2 m in front of them is no building's). */
-  type Edge = { b: Bldg; f: Frame; L: number; y0: number; top: number; exposed: boolean; floors: number[]; small: boolean };
+  /** Exposed edges: walls that face an open alley (the space 1.2 m in front of them is no building's), or that rise
+   *  well above the building in front of them: dressed from `from` (a height; -Infinity: from the ground) up. */
+  type Edge = { b: Bldg; f: Frame; L: number; y0: number; top: number; exposed: boolean; floors: number[]; small: boolean; from: number };
   const edges: Edge[] = [];
 
   /** One window design per building (Tokyo about 1980: aluminium sashes in silver, bronze, white or black; tall, wide,
@@ -210,18 +219,25 @@ export function dressDistrict(data: HeroData, M: Mats, night: boolean, seed = 11
         ox = cx;
         oz = cz;
       }
-      let open = 0;
+      let open = 0, below = -Infinity;
       for (const t of [0.2, 0.5, 0.8]) {
         const qx = ox + u[0] * L * t + n[0] * 1.2, qz = oz + u[2] * L * t + n[2] * 1.2;
-        if (!inAny(qx, qz, b) && !inside(b.pts, qx, qz)) open++;
+        if (inside(b.pts, qx, qz)) continue;
+        const nt = topAt(qx, qz, b);
+        if (nt === -Infinity) open++;
+        else below = Math.max(below, nt);
       }
-      const exposed = open >= 2 && L >= 1.0;
+      // (a tower's wall over a low neighbour, its podium or the block next door: windows from above its roof; a wall left
+      // bare all the way up read as a blank slab)
+      const over = open < 2 && L >= 2 && top - below > 6 ? below + 0.6 : Infinity;
+      const exposed = (open >= 2 && L >= 1.0) || over < Infinity;
+      const from = open >= 2 ? -Infinity : over;
       const y0 = groundY(mx, mz);
       const f = new Frame([ox, footY, oz], u, n);
       const gH = small ? Math.min(3.0, (top - parapet - y0) / storeys) : 4.0;
       const upper = storeys > 1 ? (top - parapet - y0 - gH) / (storeys - 1) : 0;
       const floors = [y0, ...Array.from({ length: storeys - 1 }, (_, k) => y0 + gH + k * upper), top - parapet];
-      const e: Edge = { b, f, L, y0, top, exposed, floors, small };
+      const e: Edge = { b, f, L, y0, top, exposed, floors, small, from };
       edges.push(e);
       const openings: Opening[] = [];
       const hero = inBox(mx, mz);
@@ -234,6 +250,7 @@ export function dressDistrict(data: HeroData, M: Mats, night: boolean, seed = 11
     const roofY = top - (small ? 0.25 : 0.9);
     const tris = earcut(ring.flat());
     B.polygon(R.pick(small ? M.roofsSmall : M.roofs), ring.map(([x, z]) => [x, roofY, z] as V3), tris, [0, 1, 0]);
+    if (st.highrise) towerRoof(b, st, roofY, wallMat);
     for (let i = 0; i < ring.length; i++) {
       const [ax, az] = ring[i], [cx, cz] = ring[(i + 1) % ring.length];
       const L = Math.hypot(cx - ax, cz - az);
@@ -245,7 +262,8 @@ export function dressDistrict(data: HeroData, M: Mats, night: boolean, seed = 11
       // the parapet's inner face
       if (!small) B.rect(M.coping, cf, 0, -(top - roofY), L, -0.06, -0.2, undefined, inward);
     }
-    rooftop(b, roofY, small, wallMat, storeys);
+    // (a tower's roof is its own: towerRoof)
+    if (!st.highrise) rooftop(b, roofY, small, wallMat, storeys);
     count("buildings");
   }
 
@@ -723,7 +741,10 @@ export function dressDistrict(data: HeroData, M: Mats, night: boolean, seed = 11
     void wallMat;
   }
 
-  type Style = { kind: "commercial" | "office" | "apartment" | "house"; bay: number; winW: number; winH: number; lit: [number, number]; tower: boolean; fascia: boolean; balconyEdge: number; longest: number; billboard: boolean; frame: typeof M.aluminium; office: boolean };
+  type Style = { kind: "commercial" | "office" | "apartment" | "house"; bay: number; winW: number; winH: number; lit: [number, number]; tower: boolean; fascia: boolean; balconyEdge: number; longest: number; billboard: boolean; frame: typeof M.aluminium; office: boolean;
+    /** A high-rise office or commercial tower (45 m and up): a curtain wall of its own (`dressCurtain`), a lobby, a roof
+     *  with plant, aviation lights and over 100 m the emergency helipad. */
+    highrise: { glass: (typeof M.curtainGlass)[number]; spandrel: (typeof M.spandrels)[number]; fin: typeof M.aluminium; finDepth: number; spandrelH: number } | null };
   /** What a building's floors look like, from its recorded use (PLATEAU usage codes) and size: one style for all its walls. */
   function styleOf(b: Bldg, storeys: number): Style {
     const u = b.usage;
@@ -748,6 +769,10 @@ export function dressDistrict(data: HeroData, M: Mats, night: boolean, seed = 11
       billboard: kind === "commercial" && storeys >= 4 && R.chance(0.35),
       frame: R.chance(0.6) ? M.aluminiumDark : M.aluminium,
       office: kind === "office",
+      highrise: (kind === "office" || kind === "commercial") && b.height >= 45 && storeys >= 10 ? {
+        glass: R.pick(M.curtainGlass), spandrel: R.pick(M.spandrels), fin: R.pick([M.aluminium, M.aluminium, M.aluminiumDark, M.frameWhite]),
+        finDepth: R.pick([0.12, 0.25, 0.4]), spandrelH: R.pick([0.9, 1.1, 1.3]),
+      } : null,
     };
   }
 
@@ -779,14 +804,89 @@ export function dressDistrict(data: HeroData, M: Mats, night: boolean, seed = 11
   /** The dressing of a building seen from the next street or the next block: its floors' windows with the rooms behind
    *  them, shopfronts and fascias on the ground floor, the stacked signs of Kabukichō's mixed-use buildings up one end,
    *  balconies on apartments. Cheaper than dressSmall: no clutter, no cables. */
+  /** A floor of a tower's curtain wall, slab to slab: per bay of about 1.6 m a kit element (the spandrel panel over the
+   *  slab, the vision glass above it, the transom, the fin at its left edge), drawn at a standard size and stretched to
+   *  the bay; the office behind the glass (lit by night as the ribbon windows' rooms are). */
+  function curtainFloor(e: Edge, openings: Opening[], st: Style, fy: number, fh: number) {
+    const H = st.highrise!, { f, L } = e, base = f.o[1];
+    const bays = Math.max(1, Math.round(L / 1.6)), bw = L / bays;
+    openings.push({ s0: 0, s1: L, y0: fy, y1: fy + fh, depth: 0.06 });
+    // (an office floor is lit in zones, not window by window: one to three runs along the wall, each lit or not)
+    const zones = Array.from({ length: 1 + R.int(3) }, () => lit(st.lit[0], st.lit[1]));
+    const Y0 = fy - base, Y1 = Y0 + fh, sp = Math.min(H.spandrelH, fh * 0.4);
+    // the wall's whole floor one kit element: the floors of a tower's wall are alike, one piece up its height
+    B.begin(f, 0, Y0);
+    B.box(H.spandrel, f, 0, L, Y0, Y0 + sp, -0.06, 0, { skip: "b" });
+    B.box(H.fin, f, 0, L, Y1 - 0.04, Y1, -0.06, 0.02, { skip: "b" });
+    for (let k = 0; k <= bays; k++) {
+      const s = Math.min(L - 0.03, Math.max(0.03, k * bw));
+      B.box(H.fin, f, s - 0.03, s + 0.03, Y0, Y1, -0.06, H.finDepth, { skip: "b" });
+      if (k < bays) {
+        pane(H.glass, f, k * bw + 0.03, Y0 + sp, (k + 1) * bw - 0.03, Y1 - 0.04, -0.05);
+        B.rect(roomFor(zones[Math.floor((k / bays) * zones.length)]), f, k * bw, Y0 + sp, (k + 1) * bw, Y1 - 0.04, -0.7, blindCell(R.pick(INSIDES.office)));
+      }
+    }
+    B.end();
+    count("curtain floors");
+  }
+
+  /** A tower's roof: its plant room (louvred), red aviation lights at the corners (lit by night; 60 m and up), and over
+   *  100 m the emergency helipad Tokyo asks of a building that tall (a green-grey pad, its white ring and H). */
+  function towerRoof(b: Bldg, st: Style, roofY: number, wallMat: typeof M.roof) {
+    const [ax, az] = b.pts[st.longest], [bx, bz] = b.pts[(st.longest + 1) % b.pts.length];
+    const ll = Math.hypot(bx - ax, bz - az) || 1, u: V3 = [(bx - ax) / ll, 0, (bz - az) / ll], n: V3 = [-u[2], 0, u[0]];
+    const [cx, cz] = centroid(b);
+    let s0 = Infinity, s1 = -Infinity, d0 = Infinity, d1 = -Infinity;
+    for (const [x, z] of b.pts) {
+      const s = (x - cx) * u[0] + (z - cz) * u[2], d = (x - cx) * n[0] + (z - cz) * n[2];
+      s0 = Math.min(s0, s); s1 = Math.max(s1, s); d0 = Math.min(d0, d); d1 = Math.max(d1, d);
+    }
+    const fr = new Frame([cx, roofY, cz], u, n);
+    const fits = (a0: number, a1: number, c0: number, c1: number) => [[a0, c0], [a1, c0], [a1, c1], [a0, c1]].every(([s, d]) => inside(b.pts, cx + u[0] * s + n[0] * d, cz + u[2] * s + n[2] * d));
+    const heli = b.height >= 100 && s1 - s0 > 34 && d1 - d0 > 18;
+    // the plant room: the half of the roof the helipad leaves, or its middle
+    const pa0 = heli ? s0 + 2 : s0 + (s1 - s0) * 0.25, pa1 = heli ? s0 + (s1 - s0) * 0.42 : s1 - (s1 - s0) * 0.25;
+    const pc0 = d0 + (d1 - d0) * 0.2, pc1 = d1 - (d1 - d0) * 0.2, ph = R.range(3.5, 6);
+    if (pa1 - pa0 > 3 && pc1 - pc0 > 3 && fits(pa0, pa1, pc0, pc1)) {
+      B.box(wallMat, fr, pa0, pa1, 0, ph, pc0, pc1);
+      B.box(M.coping, fr, pa0 - 0.1, pa1 + 0.1, ph, ph + 0.15, pc0 - 0.1, pc1 + 0.1);
+      // louvres along its long sides
+      for (let y = 0.6; y < ph - 0.5; y += 0.22) for (const d of [pc0 - 0.04, pc1 + 0.04]) B.box(M.steelDark, fr, pa0 + 0.6, pa1 - 0.6, y, y + 0.05, Math.min(d, d + (d < 0 ? -0.08 : 0.08)), Math.max(d, d + (d < 0 ? -0.08 : 0.08)));
+      if (b.height >= 60) for (const [s, d] of [[pa0, pc0], [pa1, pc0], [pa1, pc1], [pa0, pc1]]) {
+        B.box(M.steelDark, fr, s - 0.04, s + 0.04, ph + 0.15, ph + 1.2, d - 0.04, d + 0.04);
+        B.box(M.aviation, fr, s - 0.12, s + 0.12, ph + 1.2, ph + 1.45, d - 0.12, d + 0.12);
+      }
+      count("plant rooms");
+    }
+    if (heli) {
+      const hc = s1 - (s1 - s0) * 0.3, dc = (d0 + d1) / 2, R2 = Math.min(8, (d1 - d0) / 2 - 1.5);
+      if (fits(hc - R2, hc + R2, dc - R2, dc + R2)) {
+        B.box(M.helipadPaint, fr, hc - R2, hc + R2, 0, 0.35, dc - R2, dc + R2);
+        // the ring (as segments) and the H, painted on
+        const seg = 32, ro = R2 * 0.82, ri = ro - 0.45, y = 0.36;
+        for (let k = 0; k < seg; k++) {
+          const a0 = (k / seg) * Math.PI * 2, a1 = ((k + 1) / seg) * Math.PI * 2;
+          const P = (r: number, a: number): V3 => fr.p(hc + Math.cos(a) * r, y, dc + Math.sin(a) * r);
+          B.quad(M.helipadWhite, P(ri, a0), P(ro, a0), P(ro, a1), P(ri, a1), [0, 1, 0], [[0, 0], [1, 0], [1, 1], [0, 1]]);
+        }
+        const hh = ri * 0.62, hw = hh * 0.62, t = 0.55;
+        B.box(M.helipadWhite, fr, hc - hw, hc - hw + t, y - 0.01, y, dc - hh, dc + hh);
+        B.box(M.helipadWhite, fr, hc + hw - t, hc + hw, y - 0.01, y, dc - hh, dc + hh);
+        B.box(M.helipadWhite, fr, hc - hw, hc + hw, y - 0.01, y, dc - t / 2, dc + t / 2);
+        count("helipads");
+      }
+    }
+  }
+
   function dressMid(e: Edge, openings: Opening[], st: Style, balconies: boolean, longest: boolean) {
     const { f, L, floors } = e;
     const base = f.o[1], Y = (y: number) => y - base;
     const bays = Math.max(1, Math.round(L / st.bay));
     const bw = L / bays;
-    const towerAt = st.tower && L > 5 && floors.length > 3 ? (R.chance(0.5) ? 0.35 : L - 0.35) : -1;
+    const whole = e.from === -Infinity;
+    const towerAt = whole && st.tower && L > 5 && floors.length > 3 ? (R.chance(0.5) ? 0.35 : L - 0.35) : -1;
     // an external stair core up one side wall (not the street front): a tall box, slit windows, its windows skipped
-    const stairAt = W.stair && !stairDone && !longest && !balconies && L > 3.4 && floors.length > 3 ? 0.3 : -1;
+    const stairAt = whole && !st.highrise && W.stair && !stairDone && !longest && !balconies && L > 3.4 && floors.length > 3 ? 0.3 : -1;
     if (stairAt >= 0) {
       stairDone = true;
       const sw = 2.4, top = Y(e.top) + 0.6;
@@ -799,6 +899,12 @@ export function dressDistrict(data: HeroData, M: Mats, night: boolean, seed = 11
     // the floors above
     for (let fl = 1; fl + 1 < floors.length; fl++) {
       const fy = floors[fl], fh = floors[fl + 1] - fy;
+      // (the floors over a lower neighbour only)
+      if (fy < e.from - 0.3) continue;
+      if (st.highrise) {
+        curtainFloor(e, openings, st, fy, fh);
+        continue;
+      }
       if (balconies) {
         // a balcony slab the length of the wall, its railing, sliding doors behind, partitions between flats
         const by = Y(fy);
@@ -869,15 +975,32 @@ export function dressDistrict(data: HeroData, M: Mats, night: boolean, seed = 11
       }
     }
     // articulation: floor bands, piers between the bays, a crown at the top (a second finish)
-    if (W.bands && !balconies) for (let fl = 1; fl + 1 < floors.length; fl++) B.box(W.trim, f, -0.02, L + 0.02, Y(floors[fl]) - 0.14, Y(floors[fl]) + 0.06, 0, 0.07, { skip: "b" });
-    if (W.piers && !balconies && floors.length > 3) for (let k = 0; k <= bays; k++) {
+    if (W.bands && !balconies && !st.highrise) for (let fl = 1; fl + 1 < floors.length; fl++) B.box(W.trim, f, -0.02, L + 0.02, Y(floors[fl]) - 0.14, Y(floors[fl]) + 0.06, 0, 0.07, { skip: "b" });
+    if (W.piers && !balconies && !st.highrise && floors.length > 3) for (let k = 0; k <= bays; k++) {
       const ps = Math.min(L - 0.15, Math.max(0.15, k * bw));
       if (!skipAt(ps)) B.box(W.trim, f, ps - 0.15, ps + 0.15, Y(floors[1]) - 0.15, Y(e.top) - 0.05, 0, 0.1, { skip: "b" });
     }
     if (W.crown) B.box(W.trim, f, -0.04, L + 0.04, Y(e.top) - 0.75, Y(e.top) - 0.02, 0, 0.11, { skip: "b" });
     // the ground floor
     const gTop = floors[1] ?? floors[floors.length - 1];
-    if (st.kind === "commercial" || st.kind === "office") {
+    if (!whole) {
+      // (behind the neighbour)
+    } else if (st.highrise) {
+      // a tower's lobby: glass the height of the ground floor between steel mullions, the hall lit behind, a canopy
+      // over the entrance on the street front
+      const H = st.highrise, g0 = floors[0], g1 = gTop - 0.35, gb = Math.max(1, Math.round((L - 0.6) / 2.4)), gw = (L - 0.6) / gb;
+      if (g1 - g0 > 2.2 && L > 3) {
+        openings.push({ s0: 0.3, s1: L - 0.3, y0: g0, y1: g1, depth: 0.35 });
+        pane(M.glass, f, 0.3, Y(g0), L - 0.3, Y(g1), -0.3);
+        for (let k = 0; k <= gb; k++) B.box(H.fin, f, 0.3 + k * gw - 0.05, 0.3 + k * gw + 0.05, Y(g0), Y(g1), -0.34, -0.22);
+        B.box(H.fin, f, 0.3, L - 0.3, Y(g1) - 0.08, Y(g1), -0.34, -0.22);
+        B.rect(roomFor(2), f, 0.3, Y(g0), L - 0.3, Y(g1), -4, blindCell(6));
+        if (longest && L > 8) {
+          B.box(H.spandrel, f, L * 0.3, L * 0.7, Y(g1) + 0.1, Y(g1) + 0.35, 0, 3.2, { skip: "b" });
+          count("canopies");
+        }
+      }
+    } else if (st.kind === "commercial" || st.kind === "office") {
       for (let k = 0; k < bays; k++) {
         const s0 = k * bw + 0.2, s1 = (k + 1) * bw - 0.2;
         if (s1 - s0 < 0.8) continue;
@@ -921,7 +1044,7 @@ export function dressDistrict(data: HeroData, M: Mats, night: boolean, seed = 11
       B.box(R.pick(M.doorWood), f, ds, ds + dw, Y(floors[0]), Y(floors[0] + 2.0), -0.12, -0.08, { skip: "b" });
     }
     // a billboard on the roof over the street: a steel frame and a lit panel (a shop's lightbox face, writ large)
-    if (st.billboard && longest && L > 6) {
+    if (whole && st.billboard && longest && L > 6) {
       const bw2 = Math.min(L - 1, R.range(5, 9)), bh2 = bw2 * 0.5, s0 = (L - bw2) / 2, top = e.top - base;
       for (const s of [s0 + 0.5, s0 + bw2 - 0.5]) B.box(M.steelDark, f, s - 0.06, s + 0.06, top, top + 1.2 + bh2, -0.9, -0.78);
       B.box(M.steelDark, f, s0, s0 + bw2, top + 1.1, top + 1.2, -0.9, -0.6);

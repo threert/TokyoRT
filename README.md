@@ -15,6 +15,10 @@ name across all their signs. No photographs or scans: every material, model and 
 repository. Nothing is lit in advance: every light, shadow, reflection and bounce is traced as you fly.
 
 <p align="center">
+  <img src="docs/img/towers-day.jpg" width="100%" alt="The West Shinjuku towers by day from above: curtain walls of tinted glass between aluminium fins, the avenues between them">
+</p>
+
+<p align="center">
   <img src="docs/img/aerial-night.jpg" width="100%" alt="Shinjuku at night from above: thousands of lit windows, sign towers and streets">
 </p>
 
@@ -54,7 +58,7 @@ The city is three levels of detail, picked per 128 m cell by distance from the c
 | level | where | what it is |
 |---|---|---|
 | far | always resident | PLATEAU's buildings as compiled (surveyed LOD2 shells where PLATEAU has them, walls and roofs from footprint and height elsewhere, window grids), trees, the ground of every tile with its roads in generated asphalt and pavers |
-| mid (L1) | within ~480 m | each cell's buildings rebuilt from their footprints: windows by building, materials, bands and balconies, signs and sign towers, roofs with their tanks and air conditioners, trees |
+| mid (L1) | within ~480 m | each cell's buildings rebuilt from their footprints: windows by building, materials, bands and balconies, signs and sign towers, roofs with their tanks and air conditioners, trees; towers (45 m and up) in curtain walls with lobbies, plant rooms, aviation lights and over 100 m the emergency helipad |
 | street (L0) | within ~140 m | the same buildings in full: doors and windows cut into the walls with depth, shops and bars, eaves, lanterns, noren, meters, pipes, utility poles and wires across the alleys, gutters, props |
 
 - **Baking the cells** (`tools/tokyo/city-bake.ts`): the dressing rules (`scene/hero/dress.ts`) run once per cell and
