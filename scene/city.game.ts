@@ -161,7 +161,14 @@ function startJob(c: Cell, level: number): Job | null {
   // (each mesh's place in the file, then the order to add them: what emits last, all in one frame, since every commit
   // that adds emitters rebuilds the light list over all of them)
   let off = 8 + n;
-  const meshes = (head.meshes as { material: string; v: number; i: number }[]).map((m) => { const at = off; off += m.v * 32 + m.i * 4; return { ...m, at, emits: emits(lib.get(m.material)) }; });
+  // (what emits: at street level as the time of day has it, by day its twin; the mid level's glow is its shader's,
+  // no light. What does not emit goes within the frames' budget: unbudgeted, a cell's lit windows read by day took
+  // 50-110 ms of one frame)
+  const meshes = (head.meshes as { material: string; v: number; i: number }[]).map((m) => {
+    const at = off, mat = lib.get(m.material);
+    off += m.v * 32 + m.i * 4;
+    return { ...m, at, emits: level === 0 && !!mat && emits(lit(mat)) };
+  });
   meshes.sort((a, b) => Number(a.emits) - Number(b.emits));
   // (its kit instances after the meshes: 12 floats each)
   const kit = ((head.kit ?? []) as { k: number; n: number }[]).map((e) => { const at = off; off += e.n * 48; return { ...e, at }; });
@@ -208,7 +215,7 @@ function step(job: Job, budget: { tris: number; until: number; objects: number }
     const e = job.kit[job.q++];
     const piece = kitPiece(e.k);
     if (!piece) continue;
-    if (piece.some((part) => emits(part.material))) {
+    if (job.level === 0 && piece.some((part) => emits(lit(part.material)))) {
       job.kitLit.push(e);
       continue;
     }

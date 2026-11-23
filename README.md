@@ -114,10 +114,9 @@ while the resolution scale settles), at 0.5–0.6 resolution scale, with no scen
 
 | frame interval | by day | by night |
 |---|---|---|
-| MetalFX's denoiser (default) | p50 17 ms, p95 43 ms | p50 17 ms, p95 68 ms |
-| ThreeRT's (`-builtin` room suffix, or **M**) | p50 17 ms, p95 43 ms | p50 17 ms, p95 67 ms |
+| MetalFX's denoiser (default) | p50 17 ms, p95 31 ms | p50 17 ms, p95 46 ms |
 
-MetalFX holds sunlit walls and windows steadier at about the same cost. Flying slowly or standing it holds 60 fps;
+(ThreeRT's own denoiser, `-builtin` or **M**, costs about the same.) MetalFX holds sunlit walls and windows steadier. Flying slowly or standing it holds 60 fps;
 fast flight still hitches now and then, more by night (a cell's lights added or removed updates the engine's light
 tree: the next thing to make cheaper). By day the street level's unlit signs and windows are not lights at all;
 switching between day and night loads the near cells again, the nearest first, in a second or two.
