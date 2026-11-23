@@ -31,7 +31,8 @@ const AREA = "shinjuku";
 const BAKED = `assets/city/baked/${AREA}`;
 const CELL = 128;
 /** Level radii (m, from the camera to the cell's box) and the margin a level is kept beyond them. */
-const R0 = 140, R1 = 480, KEEP = 50;
+const KEEP = 50;
+let R0 = 140, R1 = 480;
 /** Triangles added in place per frame (the commit pays ~80 ns a triangle), and the frame script's time for it (ms). */
 const FRAME_TRIS = 50_000, FRAME_MS = 5, FRAME_OBJECTS = 30;
 
@@ -398,13 +399,14 @@ function collectMaterials(M: ReturnType<typeof heroMaterials>, P: ReturnType<typ
   return materials;
 }
 
-// The denoiser: MetalFX's, where the device has it (it removes the noise and upscales in one pass: steadier on sunlit
-// walls than ThreeRT's own at the same cost), else ThreeRT's. M switches between them.
+// The denoiser: the device's joint denoiser (it removes the noise and upscales in one pass: steadier on sunlit walls than
+// ThreeRT's own at the same cost), MetalFX's on a Mac, DLSS Ray Reconstruction on an RTX GPU, else ThreeRT's. M switches
+// between it and ThreeRT's.
 let metalfx = true;
 function setDenoiser(on: boolean) {
   metalfx = on;
-  rendering.set({ reconstruction: on ? ["metalfx-denoised", "builtin"] : "builtin" });
-  console.log(`Tokyo · denoiser ${on ? "MetalFX (where available)" : "ThreeRT"} · M to switch`);
+  rendering.set({ reconstruction: on ? ["metalfx-denoised", "dlss-rr", "builtin"] : "builtin" });
+  console.log(`Tokyo · denoiser ${on ? "the device's (MetalFX / DLSS-RR, where available)" : "ThreeRT"} · M to switch`);
 }
 
 function setTime(next: Time, camera: PerspectiveCamera) {
@@ -430,6 +432,15 @@ export function sceneFor(room: string) {
   time = requested === "day" || requested === "dusk" ? requested : "night";
   const night = time === "night";
   tour = room.includes("-tour");
+  // "-lowmem": for a GPU of 8 GB (an RTX laptop's): the mid level to 320 m, the far level without its props and trees
+  // (18 % of the resident acceleration structures; past a few hundred metres they are a pixel or less)
+  const lowmem = room.includes("-lowmem");
+  R1 = lowmem ? 320 : 480;
+  R0 = 140;
+  // ("-r0=m", "-r1=m": the near and mid levels' radii)
+  const r0 = /-r0=(\d+)/.exec(room), r1 = /-r1=(\d+)/.exec(room);
+  if (r0) R0 = Number(r0[1]);
+  if (r1) R1 = Number(r1[1]);
   setDenoiser(!room.includes("-builtin"));
   const at = /-at=(-?[\d.]+),(-?[\d.]+)(?:,(-?[\d.]+))?/.exec(room);
   const look = /-look=(-?[\d.]+),(-?[\d.]+)/.exec(room);
@@ -468,7 +479,7 @@ export function sceneFor(room: string) {
       };
       farQ.set(`${t.x}_${t.z}_${q}`, {
         covered: false,
-        base: model([`b${q}`, `p${q}`, `t${q}`]),
+        base: model(lowmem ? [`b${q}`] : [`b${q}`, `p${q}`, `t${q}`]),
         lights: model([`b${q}-night`, `p${q}-night`], true),
       });
     }

@@ -35,8 +35,14 @@ tools/demo.sh           # day; or tools/demo.sh night / dusk, and a start point:
 
 Click to capture the pointer (**Esc** lets go). **Mouse** to look, **W A S D** to move, **Space** / **E** up,
 **C** / **Q** down, **Shift** faster, the **wheel** scales the speed; **1** / **2** / **3** for day / dusk / night,
-**T** to cycle them; **M** switches the denoiser between MetalFX's (the default, where the system has it) and
-ThreeRT's own. You start in a Golden Gai alley; fly up and out over the city. The first frame takes 10–20 s.
+**T** to cycle them; **M** switches the denoiser between the device's (MetalFX's on a Mac, DLSS Ray Reconstruction
+on an RTX GPU) and ThreeRT's own. You start in a Golden Gai alley; fly up and out over the city. The first frame takes
+10–20 s.
+
+Room options, appended to the room id (`tools/demo.sh` takes the room's time; the tools take whole rooms):
+`-builtin` starts with ThreeRT's denoiser; `-lowmem` fits a GPU of 8 GB (an RTX laptop's: the mid level to 320 m,
+the far level without its props and trees; with `THREERT_TEX_MAX_DIM=1024`); `-r0=m`, `-r1=m` set the street and
+mid levels' radii (140 and 480 m).
 
 `node tools/tour.ts tokyo-night-tour 90` flies a set path in the live view and prints its frame times;
 `node tools/shot.ts` renders a still with the offline path tracer (as above).
