@@ -6,10 +6,6 @@
 //   roads.json      drivable road graph from OSM (junction nodes + polyline edges; y = road level, above the
 //                   ground on bridges and the elevated expressway)
 //   structures.json footbridges, station platforms and canopies (tools/pipeline/extras.mjs)
-//   x_<x>_<z>.bin   per tile, where there are any: PLATEAU's own 3D models of bridges, street furniture and
-//                   trees as one static mesh (tools/pipeline/meshes.mjs)
-//   r_<x>_<z>.jpg   per tile, where there are any: PLATEAU's aerial photos of the LOD2 roofs, packed into one atlas
-//   w_<x>_<z>.jpg   the same for the walls (shown from a distance)
 //   rails.json      surface and elevated railway lines from OSM, with their height profile (y = track bed)
 // Usage: node tools/pipeline/compile.mjs [--area=shibuya] [--no-ads]   (--no-ads: leave out the invented billboards, screens and banners)
 import fs from 'node:fs';
@@ -28,8 +24,6 @@ import { profileRailways } from './rails.mjs';
 import { readPlaces, placeSigns, placeAds } from './signs.mjs';
 import { placeFurniture } from './furniture.mjs';
 import { readExtra, buildExtras } from './extras.mjs';
-import { readModels, encodeMesh } from './meshes.mjs';
-import { bakePhotos } from './photos.mjs';
 import { SPORT, MATERIAL } from '../shared/tileformat.js';
 import { inRings } from './landscape.mjs';
 import { profileRoads, flyover, BANK } from './roadprofile.mjs';
@@ -126,10 +120,6 @@ const idx = { building: new PolyIndex(), road: new PolyIndex(), carriageway: new
 const plateauDir = path.join(area.rawDir, 'plateau');
 const gmlFiles = (type) => fs.readdirSync(plateauDir).filter((f) => new RegExp(`^\\d{8}_${type}(_\\d+)?\\.gml$`).test(f)).sort();
 
-// bridges, street furniture and trees that PLATEAU gives as finished models
-const models = readModels(plateauDir, proj.project, ground);
-log(`models (PLATEAU): ${Object.entries(models.count).map(([k, v]) => `${k.split(':')[1]} ${v}`).join(', ')}; ${models.objects.reduce((s, o) => s + o.tris.length, 0)} triangles`);
-
 const seen = new Set();
 const bstats = { files: 0, read: 0, dup: 0, noSolid: 0, dropped: 0, lod2: 0, baseDiff: [], heights: [], usage: {} };
 for (const f of gmlFiles('bldg')) {
@@ -158,17 +148,18 @@ for (const f of gmlFiles('bldg')) {
     if (b.lod2) bstats.lod2++;
     bstats.heights.push(height);
     bstats.usage[b.usage ?? 0] = (bstats.usage[b.usage ?? 0] ?? 0) + 1;
-    // LOD2 shell in world coordinates (closing points dropped; degenerate rings discarded)
+    // LOD2 shell in world coordinates, where PLATEAU has one (closing points dropped; degenerate rings discarded): the
+    // walls and roof planes as surveyed, coloured by the mesher (PLATEAU's photos of them are not used). Elsewhere the
+    // mesher makes the roof and walls from the footprint and height.
     const surfaces = [];
     for (const s of b.surfaces) {
-      let uv = s.uv && s.uv.map((u) => [...u]); // photo coordinates, kept in step with the points
-      const rings = s.rings.map((ring, r) => {
+      const rings = s.rings.map((ring) => {
         const pts = ring.map(([lon, lat, h]) => { const [x, z] = proj.project(lon, lat); return [r2(x), r2(h), r2(z)]; });
-        if (pts.length > 1 && pts[0].every((v, k) => Math.abs(v - pts.at(-1)[k]) < 0.02)) { pts.pop(); uv?.[r].splice(-2); }
+        if (pts.length > 1 && pts[0].every((v, k) => Math.abs(v - pts.at(-1)[k]) < 0.02)) pts.pop();
         return pts;
       });
-      if (rings.some((r) => r.length < 3 || r.length >= 65000)) { if (rings[0].length < 3 || rings[0].length >= 65000) continue; rings.length = 1; uv = uv && [uv[0]]; }
-      if (rings.length < 256 && surfaces.length < 65000) surfaces.push({ roof: s.roof, rings, image: uv ? s.image : null, photo: uv });
+      if (rings.some((r) => r.length < 3 || r.length >= 65000)) { if (rings[0].length < 3 || rings[0].length >= 65000) continue; rings.length = 1; }
+      if (rings.length < 256 && surfaces.length < 65000) surfaces.push({ roof: s.roof, rings });
     }
     bstats.surfaces = (bstats.surfaces ?? 0) + surfaces.length;
     tileFor(cx, cz).buildings.push({ usage: b.usage, storeys: b.storeys, flags, base: r2(base), height: r2(height), measuredHeight: b.measuredHeight, polygons: polys, surfaces });
@@ -264,7 +255,7 @@ const decks = roadsOut.edges.filter((e) => e.span).map((e) => {
 });
 // Under a road bridge the terrain model shows the bridge, not the track bed below it.
 const underBridge = (x, z) => decks.some((d) => { const p = projectOnDeck(d, x, z); return p.inside && p.dist <= d.half - CORRIDOR_MARGIN + 6; });
-const rails = profileRailways(buildRailways(osm, proj.project, inBounds), ground, inBounds, underBridge, (x, z) => models.tops.at(x, z));
+const rails = profileRailways(buildRailways(osm, proj.project, inBounds), ground, inBounds, underBridge);
 // Station buildings stand over the tracks, but PLATEAU gives them as solid blocks. Record where each track
 // crosses a building outline so the client can put a tunnel mouth there: [x, y, z, dirX, dirZ], pointing in.
 let portals = 0;
@@ -411,10 +402,6 @@ for (const m of [...extras.marks, ...courtLines.map((ring) => ({ kind: AREA.MARK
   const [cx, cz] = centre(m.ring);
   if (inBounds(cx, cz)) tileFor(cx, cz).areas.push({ kind: m.kind, code: 0, polygons: [[rounded(m.ring)]] });
 }
-// a footbridge PLATEAU has as a model is not built a second time from the OSM line
-const osmBridges = extras.structures.footbridges.length;
-extras.structures.footbridges = extras.structures.footbridges.filter((f) => models.tops.cover(f.pts) < 0.5);
-extras.count['footbridges replaced by PLATEAU models'] = osmBridges - extras.structures.footbridges.length;
 for (const b of extras.barriers) tileFor((b[0] + b[2]) / 2, (b[1] + b[3]) / 2).walls.push(b);
 fs.mkdirSync(area.outDir, { recursive: true });
 log(`OSM extras: ${Object.entries(extras.count).map(([k, v]) => `${k} ${v}`).join(', ')}`);
@@ -479,45 +466,9 @@ for (const p of furniture.props) tileFor(p.x, p.z).props.push({ ...p, x: r2(p.x)
 for (const s of furniture.signs) tileFor(s.x, s.z).signs.push({ ...s, x: r2(s.x), y: r2(s.y), z: r2(s.z), w: r2(s.w), h: r2(s.h) });
 log(`street furniture (OSM): ${Object.entries(furniture.count).map(([k, v]) => `${propName[k]} ${v}`).join(', ')}`);
 
-// ---------------------------------------------------------------- PLATEAU models against generated objects
-// One of each: a surveyed tree or subway entrance replaces the generated one; a generated street light or
-// signal (they light up, and the signals run with the traffic) keeps its place and the model is left out.
-{
-  const near = (list, x, z, r) => list.some((p) => Math.hypot(p.x - x, p.z - z) < r);
-  const all = [...tiles.values()].flatMap((t) => t.props);
-  const lights = all.filter((p) => p.kind === PROP.LIGHT), signals = all.filter((p) => p.kind === PROP.SIGNAL);
-  const before = models.objects.length;
-  models.objects = models.objects.filter((o) => !(o.type === 'frn' && ((o.code === 4200 && near(lights, o.x, o.z, 8)) || (o.code === 4900 && near(signals, o.x, o.z, 10)))));
-  const trees = models.objects.filter((o) => o.type === 'veg' && o.code === 0), entrances = models.objects.filter((o) => o.type === 'frn' && o.code === 4020);
-  let removed = 0;
-  for (const t of tiles.values()) {
-    const n = t.props.length;
-    t.props = t.props.filter((p) => !((p.kind === PROP.TREE && near(trees, p.x, p.z, 4)) || (p.kind === PROP.SUBWAY && near(entrances, p.x, p.z, 12))));
-    removed += n - t.props.length;
-  }
-  let tris = 0;
-  for (const o of models.objects) for (const t of o.tris) {
-    const x = (t.a[0] + t.b[0] + t.c[0]) / 3, z = (t.a[2] + t.b[2] + t.c[2]) / 3;
-    if (!inBounds(x, z)) continue;
-    (tileFor(x, z).mesh ??= []).push(t); tris++;
-  }
-  log(`models: ${models.objects.length} objects kept (${before - models.objects.length} lights and signals left to the generated ones), ${tris} triangles; ${removed} generated trees and subway entrances replaced`);
-}
-
 // ---------------------------------------------------------------- write
 fs.rmSync(area.outDir, { recursive: true, force: true });
 fs.mkdirSync(area.outDir, { recursive: true });
-// PLATEAU's photos: a roof atlas per tile, and the colour of each building's walls
-const photos = { tiles: 0, roofs: 0, walls: 0, colours: 0, bytes: 0 };
-for (const t of tiles.values()) {
-  const roofFile = `r_${t.tx}_${t.tz}.jpg`, wallFile = `w_${t.tx}_${t.tz}.jpg`;
-  const baked = await bakePhotos(t, plateauDir, path.join(area.outDir, roofFile), path.join(area.outDir, wallFile));
-  if (baked.roofs) t.atlas = roofFile;
-  if (baked.walls) t.wallAtlas = wallFile;
-  if (baked.roofs || baked.walls) photos.tiles++;
-  for (const k of ['roofs', 'walls', 'colours', 'bytes']) photos[k] += baked[k];
-}
-log(`photos (PLATEAU): ${photos.roofs} roofs and ${photos.walls} sets of walls in the atlases of ${photos.tiles} tiles (${(photos.bytes / 1e6).toFixed(1)} MB), ${photos.colours} buildings take their wall colour from the photo`);
 let bytes = 0;
 const tileList = [];
 for (const t of [...tiles.values()].sort((a, b) => a.tz - b.tz || a.tx - b.tx)) {
@@ -525,14 +476,6 @@ for (const t of [...tiles.values()].sort((a, b) => a.tz - b.tz || a.tx - b.tx)) 
   fs.writeFileSync(path.join(area.outDir, file), buf);
   bytes += buf.length;
   const entry = { x: t.tx, z: t.tz, file, buildings: t.buildings.length, areas: t.areas.length, props: t.props.length, signs: t.signs.length, bytes: buf.length };
-  if (t.atlas) entry.atlas = t.atlas;
-  if (t.wallAtlas) entry.walls = t.wallAtlas;
-  if (t.mesh) {
-    entry.mesh = `x_${t.tx}_${t.tz}.bin`;
-    const m = encodeMesh(t.mesh);
-    fs.writeFileSync(path.join(area.outDir, entry.mesh), m);
-    bytes += m.length;
-  }
   tileList.push(entry);
 }
 fs.writeFileSync(path.join(area.outDir, 'terrain.bin'), Buffer.from(grid.data.buffer));
@@ -567,7 +510,7 @@ const manifest = {
   decks,
   tiles: tileList,
   attribution: [
-    '3D city model, roof photos, bridges, street furniture: Project PLATEAU, MLIT Japan (CC BY 4.0 compatible PLATEAU terms)',
+    'Buildings (footprints, heights, LOD2 shells), road outlines: Project PLATEAU, MLIT Japan (CC BY 4.0 compatible PLATEAU terms)',
     'Elevation: Geospatial Information Authority of Japan (GSI) DEM tiles',
     'Road network and railways: © OpenStreetMap contributors (ODbL 1.0)',
   ],

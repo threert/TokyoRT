@@ -1,4 +1,4 @@
-// Every shop's signs (scene/hero/shops.ts) as photographs of worn signs: drawn as SVG through sharp with the
+// Every shop's signs (scene/hero/shops.ts) as worn signs: drawn as SVG through sharp with the
 // system's Japanese fonts, then aged in raw pixels: backlit faces brighter at the middle with the fluorescent tubes behind
 // them showing as faint bands, yellowed plastic, dirt toward the edges and the bottom, dead insects inside the box,
 // faded dye on the noren, grain on the wooden plates. One 512 x 512 slot a shop, sixteen a 2048 x 2048 page.

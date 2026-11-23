@@ -2,11 +2,10 @@
 //   PLATEAU CityGML  buildings (bldg) and road surfaces (tran), per 3rd-level mesh
 //   OpenStreetMap    drivable road network and railways (Overpass API)
 //   GSI DEM          5 m terrain tiles (dem5a), 10 m tiles (dem10b) to fill gaps
-//   GSI aerial photo seamlessphoto tiles, into public/ortho/<area>/ (the client drapes them on the ground)
 // Usage: node tools/pipeline/fetch.mjs [--area=shibuya] [--force]
 import fs from 'node:fs';
 import path from 'node:path';
-import { resolveArea, ROOT, BACKDROP, backdropBox } from './config.mjs';
+import { resolveArea, BACKDROP } from './config.mjs';
 import { demTileRange, DEM_SOURCES } from './terrain.mjs';
 
 const area = resolveArea();
@@ -18,7 +17,7 @@ const OVERPASS = [
   'https://overpass.kumi.systems/api/interpreter',
   'https://overpass.private.coffee/api/interpreter',
 ];
-const PLATEAU_TYPES = ['bldg', 'tran', 'brid', 'frn', 'veg'];
+const PLATEAU_TYPES = ['bldg', 'tran'];
 
 const t0 = Date.now();
 const log = (...a) => console.log(((Date.now() - t0) / 1000).toFixed(1).padStart(6) + 's', ...a);
@@ -72,18 +71,7 @@ async function fetchPlateau() {
     const buf = await download(j.url, j.file);
     log(`  ${path.basename(j.file)} ${(buf.length / 1e6).toFixed(1)} MB`);
   });
-  // Photo textures of the LOD2 buildings (one roof and one wall image each), named relative to the building file.
-  const images = new Map();
-  for (const j of jobs) {
-    if (!/_bldg/.test(path.basename(j.file))) continue;
-    for (const m of fs.readFileSync(j.file, 'utf8').matchAll(/<app:imageURI>([^<]*\/(?:Roof|Wall)SurfaceTexture[^<]*)</g))
-      if (!images.has(m[1])) images.set(m[1], { url: new URL(m[1], j.url).href, file: path.join(dir, m[1]) });
-  }
-  const want = [...images.values()].filter((j) => !exists(j.file));
-  log(`plateau textures: ${images.size} images, ${want.length} to download`);
-  let failed = 0;
-  await pool(want, 8, async (j) => { try { await download(j.url, j.file); } catch { failed++; } });
-  if (failed) log(`  ${failed} images could not be downloaded (those buildings stay untextured)`);
+
 }
 
 // Overpass queries, one cached file each. `{bb}` is replaced by the area bounding box.
@@ -193,45 +181,21 @@ async function fetchDem() {
   }
 }
 
-// Aerial photo: zoom 17 is about 1 m per pixel here, 170 tiles for the area.
-async function fetchOrtho() {
-  const z = 17, dir = path.join(ROOT, 'ortho', area.id), { x0, x1, y0, y1 } = demTileRange(area.bbox, z);
-  const jobs = [];
-  for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++)
-    jobs.push({ url: `https://cyberjapandata.gsi.go.jp/xyz/seamlessphoto/${z}/${x}/${y}.jpg`, file: path.join(dir, `${z}_${x}_${y}.jpg`) });
-  const todo = jobs.filter((j) => !exists(j.file));
-  log(`aerial photo: ${jobs.length} tiles, ${todo.length} to download`);
-  await pool(todo, 4, async (j) => { try { await download(j.url, j.file); } catch (e) { log(`  ${e.message} (left as a gap)`); } });
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, 'index.json'), JSON.stringify({ z, x0, x1, y0, y1, attribution: 'Aerial photo: Geospatial Information Authority of Japan (GSI) seamlessphoto' }));
-}
-
-// The land around the area: coarse elevation, and a coarse aerial photo for the client to lay over it.
-async function fetchBackdrop() {
-  if (!area.backdropBbox) return;
-  const dem = (z, x, y) => `https://cyberjapandata.gsi.go.jp/xyz/dem_png/${z}/${x}/${y}.png`, photo = (z, x, y) => `https://cyberjapandata.gsi.go.jp/xyz/seamlessphoto/${z}/${x}/${y}.jpg`;
-  const out = path.join(ROOT, 'ortho', area.id, 'backdrop');
-  const sets = [
-    { box: area.backdropBbox, zoom: BACKDROP.zoom, url: dem, dir: path.join(area.rawDir, 'dem', 'backdrop'), ext: 'png' },
-    { box: area.backdropBbox, zoom: BACKDROP.photoZoom, url: photo, dir: out, ext: 'jpg', index: true },
-    { box: backdropBox(area, BACKDROP.near), zoom: BACKDROP.nearZoom, url: photo, dir: path.join(out, 'near'), ext: 'jpg', index: true },
-  ];
-  for (const s of sets) {
-    const { z, x0, x1, y0, y1 } = demTileRange(s.box, s.zoom), jobs = [];
-    for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) jobs.push({ url: s.url(z, x, y), file: path.join(s.dir, `${z}_${x}_${y}.${s.ext}`) });
-    const todo = jobs.filter((j) => !exists(j.file));
-    log(`backdrop zoom ${s.zoom}: ${jobs.length} tiles, ${todo.length} to download`);
-    await pool(todo, 6, async (j) => { try { await download(j.url, j.file); } catch (e) { log(`  ${e.message} (left as a gap)`); } });
-    if (s.index) fs.writeFileSync(path.join(s.dir, 'index.json'), JSON.stringify({ z, x0, x1, y0, y1 }));
-  }
-}
-
 log(`area ${area.id}: meshes ${area.meshes.join(' ')}`);
 log(`bbox lat ${area.bbox.south.toFixed(5)}..${area.bbox.north.toFixed(5)} lon ${area.bbox.west.toFixed(5)}..${area.bbox.east.toFixed(5)}`);
 // (OpenStreetMap last: its servers are the ones that keep one waiting, and the rest is the bulk of the download)
 await fetchDem();
-await fetchOrtho();
-await fetchBackdrop();
+if (area.backdropBbox) {
+  const { z, x0, x1, y0, y1 } = demTileRange(area.backdropBbox, BACKDROP.zoom);
+  const files = [];
+  for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) {
+    const file = path.join(area.rawDir, 'dem', 'backdrop', `${z}_${x}_${y}.png`);
+    if (!exists(file)) files.push({ url: `https://cyberjapandata.gsi.go.jp/xyz/dem_png/${z}/${x}/${y}.png`, file });
+  }
+  await pool(files, 4, async ({ url, file }) => {
+    try { await download(url, file); } catch (e) { log(`  ${e.message} (left as a gap)`); }
+  });
+}
 await fetchPlateau();
 await fetchOsm();
 log('done');

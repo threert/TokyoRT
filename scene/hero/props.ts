@@ -9,20 +9,20 @@ type Rng = ReturnType<typeof rng>;
 type Mat = MeshStandardMaterial;
 type UV = [number, number];
 
-const PH = "assets/polyhaven/tex";
+import { finishMap } from "./finish.ts";
 const HERO = "assets/city/hero/tex";
 const tex = (file: string, clamp = true) => {
   const t = new Texture(`${HERO}/${file}`);
   if (clamp) t.wrap = "clamp";
   return t;
 };
-function scan(id: string, size: number, o: { tint?: [number, number, number]; name?: string } = {}) {
-  const map = new Texture(`${PH}/${id}/${id}_diff_2k.jpg`);
+function finish(id: string, size: number, o: { tint?: [number, number, number]; name?: string } = {}) {
+  const map = finishMap(id, "color");
   map.repeat = [1 / size, 1 / size];
   return new SurfaceMaterial({
     name: o.name ?? id, map, color: o.tint ?? [1, 1, 1], roughness: 1,
-    normalMap: new Texture(`${PH}/${id}/${id}_nor_gl_2k.jpg`, "linear"),
-    roughnessMap: new Texture(`${PH}/${id}/${id}_rough_2k.jpg`, "linear"),
+    normalMap: finishMap(id, "normal"),
+    roughnessMap: finishMap(id, "rough"),
   });
 }
 
@@ -63,7 +63,7 @@ export function propMaterials(night: boolean) {
     binBody: std("bin plastic", 0xeeeeea, 0.45),
     binLabel: std("bin label", 0xffffff, 0.5, { map: tex("bin-label.png") }),
     // A-boards
-    boardWood: scan("dark_wooden_planks", 0.6, { name: "board wood" }),
+    boardWood: finish("planks-dark", 0.6, { name: "board wood" }),
     chalk: std("chalk menu", 0xffffff, 0.92, { map: tex("menus.png") }),
     // umbrellas, crates
     umbrella: std("umbrella vinyl", 0xf4f8fb, 0.18, { transmission: 0.85, ior: 1.4, side: "double" }),

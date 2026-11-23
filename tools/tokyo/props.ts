@@ -1,10 +1,13 @@
 // Street props of a city tile as triangles by material, after the upstream client's models (src/world/props.js in
 // jeantimex/tokyo): street lights and utility poles with LED heads (emitters: they light the streets at night),
-// signals, vending machines (lit fronts), parked cars, and trees (a trunk and a lumpy crown, the client's far-tree
-// shape). Each prop: kind, variant, rotation about +y (0..2π), x, z, scale; models face local +z, turned by `rot` as the
+// signals, vending machines (lit fronts), parked cars, and trees (crown lobes fitted to EZ-Tree foliage). Each prop: kind, variant, rotation about +y (0..2π), x, z, scale; models face local +z, turned by `rot` as the
 // client turns them (about +y), lifted as it lifts them (lights and signals stand on the kerb). Park trees (variants 2
 // and 3) stand in clumps of three, as the client sets them. The lamps' lit faces go to the GLB's "night" node, the
 // same faces unlit to its "day" node (tools/tokyo/glb.ts).
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { repoRoot } from "../lib/paths.ts";
+import { treeSites } from "../../scene/trees.ts";
 import { PROP } from "../city/shared/tileformat.js";
 
 export type Soup = { pos: number[]; nor: number[] };
@@ -24,8 +27,6 @@ export const PROP_MATERIALS: Record<string, PropMaterial> = {
   vendingFront: { key: "vendingFront", color: [0.1, 0.1, 0.1], roughness: 0.2, emissive: [0.95, 0.97, 1], nits: 120 },
   signalRed: { key: "signalRed", color: [0.05, 0.01, 0.01], roughness: 0.3, emissive: [1, 0.08, 0.04], nits: 400 },
   signalGreen: { key: "signalGreen", color: [0.01, 0.05, 0.03], roughness: 0.3, emissive: [0.1, 1, 0.6], nits: 400 },
-  trunk: { key: "trunk", color: L(0.24, 0.18, 0.13), roughness: 0.9 },
-  crown: { key: "crown", color: [0.035, 0.06, 0.018], roughness: 0.85 },
   tyre: { key: "tyre", color: L(0.05, 0.05, 0.05), roughness: 0.8 },
   carGlass: { key: "carGlass", color: [0.02, 0.022, 0.025], roughness: 0.05 },
 };
@@ -67,24 +68,17 @@ function tube(r0: number, r1: number, h: number, x: number, y: number, z: number
   }
   return out;
 }
-/** An icosahedron of radius r at c, squashed vertically, its vertices pushed in and out a little. */
-function lump(c: number[], r: number, squash: number, k: number): Tri[] {
-  const t = (1 + Math.sqrt(5)) / 2;
-  const v = [[-1, t, 0], [1, t, 0], [-1, -t, 0], [1, -t, 0], [0, -1, t], [0, 1, t], [0, -1, -t], [0, 1, -t], [t, 0, -1], [t, 0, 1], [-t, 0, -1], [-t, 0, 1]].map((p) => {
-    const q = norm(p), w = 0.86 + 0.2 * Math.sin(q[0] * 21 + q[2] * 13 + k * 2.1) * Math.sin(q[1] * 17 + q[0] * 9 + k);
-    return [c[0] + q[0] * r * w, c[1] + q[1] * r * w * squash, c[2] + q[2] * r * w];
-  });
-  const f = [[0, 11, 5], [0, 5, 1], [0, 1, 7], [0, 7, 10], [0, 10, 11], [1, 5, 9], [5, 11, 4], [11, 10, 2], [10, 7, 6], [7, 1, 8], [3, 9, 4], [3, 4, 2], [3, 2, 6], [3, 6, 8], [3, 8, 9], [4, 9, 5], [2, 4, 11], [6, 2, 10], [8, 6, 7], [9, 8, 1]];
-  return f.map(([a, b, d]) => face(v[a], v[b], v[d]));
-}
-
 // ---------------------------------------------------------------- models
 const MODELS = new Map<string, Part[]>();
 function model(key: string, build: () => Part[]): Part[] {
   if (!MODELS.has(key)) MODELS.set(key, build());
   return MODELS.get(key)!;
 }
-const TREE_HEIGHT = [9, 8, 13, 17, 13, 7];
+const treeGeometry: { forms: Part[][]; colors: Record<string, [number, number, number]> } =
+  JSON.parse(readFileSync(join(repoRoot, "assets/city/street-models/ez-far.json"), "utf8"));
+for (const [key, color] of Object.entries(treeGeometry.colors)) {
+  PROP_MATERIALS[key] = { key, color, roughness: key === "ez-bark" ? 0.94 : 0.78 };
+}
 function propModel(kind: number, variant: number): Part[] | null {
   switch (kind) {
     case PROP.LIGHT: // tapered mast, an arm towards the road (+z), a flat LED head facing down
@@ -121,13 +115,7 @@ function propModel(kind: number, variant: number): Part[] | null {
         { mat: "tyre", tris: [-1.35, 1.35].flatMap((z) => [-0.8, 0.8].flatMap((x) => box(0.2, 0.6, 0.6, x, 0.3, z))) },
       ]);
     }
-    case PROP.TREE: { // trunk and crown, the crown's lumps as the client's far trees; height by variant
-      const v = Math.min(variant, TREE_HEIGHT.length - 1), H = TREE_HEIGHT[v];
-      return model(`tree${v}`, () => [
-        { mat: "trunk", tris: tube(0.04 * H, 0.025 * H, 0.55 * H, 0, 0, 0, 6) },
-        { mat: "crown", tris: [[0, 0.6, 0, 0.36, 0.95], [0.21, 0.52, 0.08, 0.26, 0.85], [-0.19, 0.55, -0.11, 0.27, 0.85], [0.03, 0.8, -0.04, 0.24, 0.9], [-0.06, 0.5, 0.22, 0.25, 0.8], [0.1, 0.56, -0.22, 0.23, 0.8]].flatMap(([x, y, z, r, s], k) => lump([x * H, y * H, z * H], r * H, s, k)) },
-      ]);
-    }
+    case PROP.TREE: return treeGeometry.forms[variant];
     default:
       return null;
   }
@@ -144,7 +132,6 @@ const LIFT: Record<number, number> = { [PROP.LIGHT]: 0.15, [PROP.SIGNAL]: 0.15, 
 export function propSoups(props: Float32Array, ground: (x: number, z: number) => number) {
   const out = new Map<string, { node: string; mat: string; soup: Soup }>();
   const counts: Record<string, number> = {};
-  const rand = (i: number, c: number, k: number) => { const h = Math.sin(props[i + 3] * 12.9898 + props[i + 4] * 78.233 + c * 37.719 + k * 11.13) * 43758.5453; return h - Math.floor(h); };
   const put = (node: string, mat: string, tris: Tri[], P: (p: number[]) => number[], N: (n: number[]) => number[]) => {
     const key = `${node} ${mat}`;
     let e = out.get(key);
@@ -158,12 +145,10 @@ export function propSoups(props: Float32Array, ground: (x: number, z: number) =>
     const [kind, variant, rot, x0, z0, scale] = [props[i], props[i + 1], props[i + 2], props[i + 3], props[i + 4], props[i + 5]];
     const m = propModel(kind, variant);
     if (!m) continue;
-    const clump = kind === PROP.TREE && (variant === 2 || variant === 3) ? 2 : 0;
-    for (let c = 0; c <= clump; c++) {
+    const sites = kind === PROP.TREE ? treeSites(variant, x0, z0, rot, scale) : [{ x:x0, z:z0, rot, scale:scale || 1 }];
+    for (const {x,z,rot:r,scale:k} of sites) {
       counts[kind] = (counts[kind] ?? 0) + 1;
-      const away = c ? 3 + 3.5 * rand(i, c, 1) : 0, turn = rand(i, c, 2) * 6.2832, size = c ? 0.7 + 0.35 * rand(i, c, 3) : 1;
-      const x = x0 + Math.cos(turn) * away, z = z0 + Math.sin(turn) * away, r = rot + c * 2.1;
-      const co = Math.cos(r), si = Math.sin(r), y0 = ground(x, z) + (LIFT[kind] ?? 0), k = (scale || 1) * size;
+      const co = Math.cos(r), si = Math.sin(r), y0 = ground(x, z) + (LIFT[kind] ?? 0);
       const P = (p: number[]) => [x + (p[0] * co + p[2] * si) * k, y0 + p[1] * k, z + (-p[0] * si + p[2] * co) * k];
       const N = (n: number[]) => [n[0] * co + n[2] * si, n[1], -n[0] * si + n[2] * co];
       for (const part of m) {

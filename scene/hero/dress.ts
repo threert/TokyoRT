@@ -1,9 +1,9 @@
 // Street-level dressing for a hero district: the compiled city's footprints, storeys and wires (tools/tokyo/
 // hero-extract.ts) turned into buildings a camera can stand next to. Every building is rebuilt whole (the city's tile
-// leaves it out: tools/tokyo/to-glb.ts --exclude): walls in scanned finishes with grime, doors and windows cut into
+// leaves it out: tools/tokyo/to-glb.ts --exclude): walls in generated finishes with grime, doors and windows cut into
 // them with depth, the rooms behind the glass, eaves, signs, lanterns, noren, meters, pipes and cables; on the ground
 // the alleys' patched asphalt with gutters, grates and manholes; overhead the poles, their lines and the service drops
-// to the houses; and the clutter by the doors (Poly Haven models). Deterministic: one seed.
+// to the houses; and the clutter by the doors (generated street models). Deterministic: one seed.
 import { GLTFModel, Group, Mesh, type Object3D } from "@threert/scene";
 import earcut from "earcut";
 import { Batches, Frame, add, mul, norm, rng, type V3 } from "./builder.ts";
@@ -23,40 +23,19 @@ export interface HeroData {
   terrain: { x0: number; z0: number; step: number; w: number; h: number; y: number[] };
 }
 
-const PHM = "assets/polyhaven/models";
-/** The scanned tree's own height (m): it is scaled to the city's tree heights. */
-const TREE_MODEL_H = 3.4;
+
+import { TREE_FORMS, treeKey, treeSites } from "../trees.ts";
 /** Cells of the window-inside atlas (tools/tokyo/hero-textures.ts blinds()): 0 shoji, 1 venetian blind, 2 beige
  *  curtains, 3 lace, 4 pale blue curtains, 5 pale green curtains, 6 office ceiling, 7 a room's back wall. */
 const BLIND_CELLS = 8;
 const blindCell = (i: number): [number, number, number, number] => [i / BLIND_CELLS + 0.002, 0, (i + 1) / BLIND_CELLS - 0.002, 1];
 /** The interiors each kind of building shows. */
 const INSIDES = { home: [0, 2, 2, 3, 3, 4, 5, 7, 1], office: [1, 1, 6, 6, 6], shop: [1, 2, 3, 7, 6], bar: [0, 2, 3, 7] };
-/** Models by key: file, node (and that node's offset in the file, to undo), and what they rest on. */
-export const MODELS: Record<string, { uri: string; node?: string; at?: V3 }> = {
-  aircon: { uri: `${PHM}/exterior_aircon_unit_2k.glb`, node: "exterior_aircon_unit", at: [-0.5, 0, 0] },
-  airconRust: { uri: `${PHM}/exterior_aircon_unit_2k.glb`, node: "exterior_aircon_unit_rusted", at: [0.5, 0, 0] },
-  crate1: { uri: `${PHM}/plastic_crate_01_2k.glb` },
-  crate2: { uri: `${PHM}/plastic_crate_02_2k.glb` },
-  crate3: { uri: `${PHM}/plastic_crate_03_2k.glb` },
-  propane: { uri: `${PHM}/propane_tank_2k.glb` },
-  trashbag: { uri: `${PHM}/trashbag_2k.glb` },
-  plant1: { uri: `${PHM}/potted_plant_01_2k.glb` },
-  plant2: { uri: `${PHM}/potted_plant_02_2k.glb` },
-  plant4: { uri: `${PHM}/potted_plant_04_2k.glb` },
-  planter: { uri: `${PHM}/planter_box_01_2k.glb` },
-  stool: { uri: `${PHM}/folding_wooden_stool_2k.glb` },
-  box: { uri: `${PHM}/cardboard_box_01_2k.glb` },
-  can: { uri: `${PHM}/metal_trash_can_2k.glb`, node: "metal_trash_can", at: [0.5, 0, 0] },
-  wcrate: { uri: `${PHM}/wooden_crate_01_2k.glb` },
-  powerbox: { uri: `${PHM}/power_box_01_2k.glb` },
-  camera: { uri: `${PHM}/security_camera_01_2k.glb` },
-  wallLamp: { uri: `${PHM}/industrial_wall_lamp_2k.glb` },
-  socket: { uri: `${PHM}/pull_chain_light_socket_2k.glb` },
-  manhole: { uri: `${PHM}/water_manhole_cover_2k.glb` },
-  utility: { uri: `${PHM}/utility_box_01_2k.glb` },
-  tree: { uri: `${PHM}/island_tree_02_1k.glb` },
-};
+export const MODEL_KEYS = ["aircon", "airconRust", "crate1", "crate2", "crate3", "propane", "trashbag", "plant1", "plant2", "plant4", "planter", "stool", "box", "can", "wcrate", "powerbox", "camera", "wallLamp", "socket", "manhole", "utility"] as const;
+export const MODELS: Record<string, { uri: string }> = Object.fromEntries(
+  [...MODEL_KEYS, ...TREE_FORMS.flatMap((_, v) => [treeKey(v, 0), treeKey(v, 1)])].map(key => [key, { uri: `assets/city/street-models/${key}.glb` }]),
+);
+
 
 export interface FacadeInfo { building: number; o: V3; u: V3; n: V3; length: number; y0: number; small: boolean }
 
@@ -312,8 +291,7 @@ export function dressDistrict(data: HeroData, M: Mats, night: boolean, seed = 11
     g.position.set(...at);
     g.rotation.y = Math.atan2(facing[0], facing[2]) + spin;
     g.scale.setScalar(scale);
-    const model = new GLTFModel(m.uri, m.node ? { nodes: [m.node] } : {});
-    if (m.at) model.position.set(-m.at[0], -m.at[1], -m.at[2]);
+    const model = new GLTFModel(m.uri);
     g.add(model);
     if (!ab.noProps) objects.push(g);
     count(key);
@@ -1045,15 +1023,12 @@ export function dressDistrict(data: HeroData, M: Mats, night: boolean, seed = 11
   }
   }
 
-  // ---------------------------------------------------------------- trees where the city has them (its low-poly ones
-  // are left out of the ring's tiles: to-glb --strip): a scanned tree, at the height the city gives (tools/tokyo/props.ts)
-  {
-    const TREE_HEIGHT = [9, 8, 13, 17, 13, 7], MODEL_H = TREE_MODEL_H;
-    const [mx0, mz0, mx1, mz1] = data.box;
-    for (const t of data.props) {
-      if (t.kind !== 0 || t.x < mx0 || t.x > mx1 || t.z < mz0 || t.z > mz1 || !inCell(t.x, t.z)) continue;
-      const h = TREE_HEIGHT[Math.min(t.variant, 5)] * (t.scale || 1) * R.range(0.9, 1.1);
-      place("tree", [t.x, groundY(t.x, t.z) - 0.05, t.z], [Math.cos(t.rot), 0, Math.sin(t.rot)], h / MODEL_H);
+  // Trees share their seed, placement and silhouette across the three city levels.
+  for (const t of data.props) {
+    if (t.kind !== 0 || !inCell(t.x, t.z) || t.x < data.box[0] || t.z < data.box[1] || t.x > data.box[2] || t.z > data.box[3]) continue;
+    const key = treeKey(t.variant, inBox(t.x, t.z) ? 0 : 1);
+    for (const site of treeSites(t.variant, t.x, t.z, t.rot, t.scale)) {
+      place(key, [site.x, groundY(site.x, site.z), site.z], [Math.sin(site.rot), 0, Math.cos(site.rot)], site.scale);
     }
   }
 

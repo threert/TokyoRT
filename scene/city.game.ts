@@ -8,12 +8,13 @@
 // it is complete; the level it replaces goes then.
 //
 // Room id: "tokyo-night" | "tokyo-day" | "tokyo-dusk", with "-at=x,z" or "-at=x,y,z" (where to start; the first cells
-// load with the scene) and "-tour" (the camera flies a set path: clips and benchmarks).
+// load with the scene), "-look=yaw,pitch" (degrees) and "-tour" (the camera flies a set path: clips and benchmarks).
 // Controls (pointer "look": click to capture, Esc to let go): mouse to look, W A S D to move, Space / E up, C / Q down,
-// Shift faster, the wheel scales the speed.
-import { DirectionalLight, GLTFModel, Group, Mesh, MeshBasicMaterial, MeshStandardMaterial, readAsset, PerspectiveCamera, PlaneGeometry, Scene, SurfaceMaterial, Texture, BufferGeometry, wetLayer, type Object3D } from "@threert/scene";
+// Shift faster, the wheel scales the speed. T cycles day/dusk/night, or 1/2/3 selects a preset.
+import { DirectionalLight, GLTFModel, Group, Mesh, MaterialFunction, MeshStandardMaterial, readAsset, PerspectiveCamera, PlaneGeometry, Scene, SurfaceMaterial, BufferGeometry, wetLayer, type Object3D } from "@threert/scene";
 import { defineGame, type FrameContext } from "@threert/gameplay";
 import { tokyoSky } from "./sky.ts";
+import { finishMap } from "./hero/finish.ts";
 import { heroMaterials } from "./hero/materials.ts";
 import { propMaterials, aBoard, beerCases, bicycle, scooter, umbrellaStand, vendingMachine } from "./hero/props.ts";
 import { MODELS } from "./hero/dress.ts";
@@ -29,23 +30,63 @@ const R0 = 140, R1 = 480, KEEP = 50;
 /** Triangles added in place per frame (the commit pays ~80 ns a triangle), and the frame script's time for it (ms). */
 const FRAME_TRIS = 50_000, FRAME_MS = 5, FRAME_OBJECTS = 30;
 
-type Cell = { i: number; j: number; level: number; roots: [Group, Group]; loading: Job | null };
-type Job = { level: number; path: string; meshes: { material: string; v: number; i: number; at: number; emits: boolean }[]; placements: Placement[]; off: number; k: number; p: number; root: Group };
+/** A cell: the level it shows and the group that holds it (two for L0: a time-of-day change loads the cell again
+ *  in the other one while this one shows), the night its L0 was made for, the level loading. */
+type Cell = { i: number; j: number; level: number; roots: [Group, Group, Group]; shown: Group | null; night: boolean; loading: Job | null };
+type Job = { level: number; night: boolean; path: string; meshes: { material: string; v: number; i: number; at: number; emits: boolean }[]; placements: Placement[]; off: number; k: number; p: number; root: Group };
 type Placement = { m: string; at: V3; ry: number; s: number } | { p: string; v: number; at: V3; ry: number };
 
 const engine = { readAsset };
 
 // ---------------------------------------------------------------- the world as the scene keeps it
 let lib = new Map<string, MeshStandardMaterial>();
-/** By night, what mid-distance cells (L1) draw for a material that emits: an unlit one that shows the same light and
- *  lights nothing (light sampling is for what is near: every emitter added or removed rebuilds the light list). */
-const unlitOf = new Map<MeshStandardMaterial, MeshStandardMaterial>();
-let night = true;
+// The L1 glow is visible to the camera and in mirrors. Only close emitters enter the light sampler.
+const midOf = new Map<MeshStandardMaterial, MeshStandardMaterial>();
+const midGlow = new MaterialFunction("TokyoMidGlow", {
+  params: { IsNight: 0, DayNits: 0, NightNits: 0, Tint: [1, 1, 1, 0] },
+  textures: ["Glow"],
+  code: `
+    let light = msample_color(m, i, $Glow, i.uv, exp2(i.uvd)).rgb * $Tint.rgb;
+    if ($IsNight > 0.5) {
+      o.base = vec3<f32>(0.0); o.specular = 0.0; o.metallic = 0.0;
+      o.emissive = select(vec3<f32>(0.0), light * $NightNits, i.near);
+    } else {
+      o.emissive = light * $DayNits;
+    }`,
+});
+// The far tile already has each window, sign and lamp in its night nodes. Keep that geometry resident.
+// Unlit glTF materials carry their authored glow as base colour. Restore their daylight surfaces when power is off.
+const farWindows = new MaterialFunction("TokyoFarGlass", {
+  code: `if (i.power < 0.5) {
+    o.base = vec3<f32>(0.02, 0.022, 0.025); o.emissive = vec3<f32>(0.0); o.specular = 0.5;
+  }`,
+}).with();
+const farSigns = new MaterialFunction("TokyoFarSign", {
+  code: `if (i.power < 0.5) {
+    var paper = vec3<f32>(1.0);
+    if (m.tex0.x >= 0) { paper = srgb_to_linear(tex(m.tex0.x, i.uv, i.lod + i.uvd).rgb); }
+    o.base = paper; o.emissive = paper * 20.0; o.specular = 0.5;
+  }`,
+}).with();
+const TIMES = {
+  day: { elevation: 38, azimuth: 247.5, ev: 11.5 },
+  dusk: { elevation: 3, azimuth: 250, ev: 8.5 },
+  night: { elevation: -40, azimuth: 0, ev: 3.2 },
+} as const;
+type Time = keyof typeof TIMES;
+let time: Time = "night";
+let sun: DirectionalLight;
+// A material that glows less by day has a daytime twin at that glow (none, for most: then it is no light at all). The
+// near meshes drawn with it take the twin by day: a light kept in the sampler at no power still costs every streamed
+// cell a light-tree update. (So a change between night and day loads the near cells again, the nearest first.)
+const dayOf = new Map<MeshStandardMaterial, MeshStandardMaterial>();
+const lit = (m: MeshStandardMaterial) => (time === "night" ? m : dayOf.get(m) ?? m);
 let PM: ReturnType<typeof propMaterials>;
 const protos = new Map<string, Mesh[]>();
 const cells = new Map<string, Cell>();
 /** Far objects by tile and quadrant: buildings (with their lit windows and signs) and trees. */
-const farQ = new Map<string, { b: GLTFModel | null; t: GLTFModel | null }>();
+type FarQuadrant = { covered: boolean; base: GLTFModel | null; lights: GLTFModel | null };
+const farQ = new Map<string, FarQuadrant>();
 let scene: Scene;
 const cam = { pos: [0, 0, 0] as V3, yaw: 0, pitch: 0, speed: 6 };
 
@@ -66,14 +107,14 @@ function startJob(c: Cell, level: number): Job | null {
   }
   const head = JSON.parse(ascii(new Uint8Array(engine.readAsset(path, 8, n))));
   // (each cell keeps a group per level, made with the scene: a group removed rebuilds the scene, its children do not)
-  const root = c.roots[level];
+  const root = level === 1 ? c.roots[1] : c.shown === c.roots[0] ? c.roots[2] : c.roots[0];
   clear(root);
   // (each mesh's place in the file, then the order to add them: what emits last, all in one frame, since every commit
   // that adds emitters rebuilds the light list over all of them)
   let off = 8 + n;
   const meshes = (head.meshes as { material: string; v: number; i: number }[]).map((m) => { const at = off; off += m.v * 32 + m.i * 4; return { ...m, at, emits: emits(lib.get(m.material)) }; });
   meshes.sort((a, b) => Number(a.emits) - Number(b.emits));
-  return { level, path, meshes, placements: head.placements, off: 8 + n, k: 0, p: 0, root };
+  return { level, night: time === "night", path, meshes, placements: head.placements, off: 8 + n, k: 0, p: 0, root };
 }
 
 /** Adds the job's next meshes and placements within the frame's budget (they show as they come: for a few frames the
@@ -90,15 +131,14 @@ function step(job: Job, budget: { tris: number; until: number; objects: number }
     const nor = new Float32Array(buf, m.v * 12, m.v * 3);
     const uv = new Float32Array(buf, m.v * 24, m.v * 2);
     const idx = new Uint32Array(buf, m.v * 32, m.i);
-    let mat = lib.get(m.material);
+    const mat = lib.get(m.material);
     if (!mat) continue;
-    if (job.level === 1 && night) mat = unlitOf.get(mat) ?? mat;
     const g = new BufferGeometry();
     g.positions = pos;
     g.normals = nor;
     g.uvs = uv;
     g.index = idx;
-    job.root.add(new Mesh(g, mat));
+    job.root.add(new Mesh(g, job.level === 1 ? midOf.get(mat) ?? mat : lit(mat)));
     budget.tris -= m.i / 3;
   }
   let n = 0;
@@ -117,13 +157,11 @@ const PROPS: Record<string, (b: Batches, pm: ReturnType<typeof propMaterials>, a
 /** A placement as objects: a model (one object), or a prop's meshes (one a material; a new group cannot be added in
  *  place, meshes can), each turned and moved to the place. */
 function place(p: Placement): Object3D[] {
-  const c = Math.cos(p.ry), sn = Math.sin(p.ry);
   if ("m" in p) {
     const m = MODELS[p.m];
     if (!m) return [];
-    const model = new GLTFModel(m.uri, m.node ? { nodes: [m.node] } : {});
-    const [ox, oy, oz] = m.at ? [-m.at[0] * p.s, -m.at[1] * p.s, -m.at[2] * p.s] : [0, 0, 0];
-    model.position.set(p.at[0] + ox * c + oz * sn, p.at[1] + oy, p.at[2] - ox * sn + oz * c);
+    const model = new GLTFModel(m.uri);
+    model.position.set(...p.at);
     model.rotation.y = p.ry;
     model.scale.setScalar(p.s);
     return [model];
@@ -140,6 +178,7 @@ function place(p: Placement): Object3D[] {
   }
   return ms.map((m) => {
     const o = m.clone();
+    o.material = lit(o.material as MeshStandardMaterial);
     o.position.set(...p.at);
     o.rotation.y = p.ry;
     return o;
@@ -159,9 +198,12 @@ function setFar(c: Cell) {
   if (!f) return;
   // (moved out of sight rather than hidden: an object hidden when the scene is rebuilt is left out of it, and showing it
   // again would rebuild the scene once more)
-  const y = c.level >= 0 ? -10000 : 0;
-  if (f.b) f.b.position.y = y;
-  if (f.t) f.t.position.y = y;
+  f.covered = c.level >= 0;
+  if (f.base) f.base.position.y = f.covered ? -10000 : 0;
+  if (f.lights) {
+    f.lights.position.y = f.covered ? -10000 : 0;
+    f.lights.power = !f.covered && time === "night" ? 1 : 0;
+  }
 }
 
 /** Shows a finished job's objects, removes the level it replaces. */
@@ -178,15 +220,17 @@ function retire(n: number) {
 }
 
 function finish(c: Cell, job: Job) {
-  if (c.level >= 0 && c.level !== job.level) clear(c.roots[c.level]);
+  if (c.shown && c.shown !== job.root) clear(c.shown);
+  c.shown = job.root;
+  c.night = job.night;
   c.level = job.level;
   c.loading = null;
   setFar(c);
 }
 
 function unload(c: Cell) {
-  clear(c.roots[0]);
-  clear(c.roots[1]);
+  for (const g of c.roots) clear(g);
+  c.shown = null;
   c.loading = null;
   c.level = -1;
   setFar(c);
@@ -212,8 +256,8 @@ function stream(x: number, y: number, z: number, budget: { tris: number; until: 
   // the job in progress, if its cell still wants it
   for (const c of cells.values()) {
     if (!c.loading) continue;
-    if (want(c, x, y, z) !== c.loading.level) {
-      if (c.loading.level !== c.level) clear(c.loading.root);
+    if (want(c, x, y, z) !== c.loading.level || c.loading.night !== (time === "night") && c.loading.level === 0) {
+      if (c.loading.root !== c.shown) clear(c.loading.root);
       c.loading = null;
       continue;
     }
@@ -226,13 +270,14 @@ function stream(x: number, y: number, z: number, budget: { tris: number; until: 
   let best: Cell | null = null, bd = Infinity;
   for (const c of cells.values()) {
     const w = want(c, x, y, z);
-    if (w < 0 || w === c.level) continue;
+    if (w < 0 || (w === c.level && (w === 1 || c.night === (time === "night")))) continue;
     const d = boxDist(c, x, z) + (w === 0 ? -50 : 0);
     if (d < bd) { bd = d; best = c; }
   }
   if (best) {
     best.loading = startJob(best, want(best, x, y, z));
-    if (!best.loading) best.level = want(best, x, y, z); // (no file: nothing to show at that level)
+    // (no file: nothing to show at that level)
+    if (!best.loading) { best.level = want(best, x, y, z); best.night = time === "night"; }
     else if (step(best.loading, budget)) finish(best, best.loading);
   }
 }
@@ -254,64 +299,107 @@ function tourAt(t: number): { pos: V3; yaw: number } {
 
 // ---------------------------------------------------------------- the scene
 let tour = false;
+function collectMaterials(M: ReturnType<typeof heroMaterials>, P: ReturnType<typeof propMaterials>) {
+  const materials = new Map<string, MeshStandardMaterial>();
+  const collect = (v: unknown, depth = 0) => {
+    if (v instanceof MeshStandardMaterial) { if (!materials.has(v.name)) materials.set(v.name, v); return; }
+    if (depth > 3 || !v || typeof v !== "object") return;
+    for (const x of Object.values(v)) collect(x, depth + 1);
+  };
+  collect(M);
+  collect(P);
+  for (let p = 0; p < SHOP_PAGES; p++) collect(M.shop(p));
+  return materials;
+}
+
+function setTime(next: Time, camera: PerspectiveCamera) {
+  const wasNight = time === "night";
+  time = next;
+  const night = time === "night";
+  const preset = TIMES[time];
+  sun.setSunAngles(preset.elevation, preset.azimuth);
+  camera.setManualExposure(preset.ev);
+  scene.wetness = night ? 1 : 0;
+  if (wasNight !== night) {
+    for (const mat of midOf.values()) {
+      const binding = mat.shader!;
+      mat.shader = midGlow.with({ ...binding.params, IsNight: night ? 1 : 0 }, binding.textures);
+    }
+    for (const f of farQ.values()) if (f.lights && !f.covered) f.lights.power = night ? 1 : 0;
+  }
+  console.log(`Tokyo · ${time} · 1 Day / 2 Dusk / 3 Night / T Cycle`);
+}
+
 export function sceneFor(room: string) {
-  const time = room.split("-")[1] ?? "night";
-  night = time === "night";
+  const requested = room.split("-")[1];
+  time = requested === "day" || requested === "dusk" ? requested : "night";
+  const night = time === "night";
   tour = room.includes("-tour");
   const at = /-at=(-?[\d.]+),(-?[\d.]+)(?:,(-?[\d.]+))?/.exec(room);
+  const look = /-look=(-?[\d.]+),(-?[\d.]+)/.exec(room);
+  cells.clear();
+  farQ.clear();
+  protos.clear();
+  dayOf.clear();
+  midOf.clear();
+  retiring.length = 0;
   scene = new Scene();
-  const sun = new DirectionalLight(0xfff4e8, 100000);
-  if (time === "day") sun.setSunAngles(38, 247.5);
-  else if (time === "dusk") sun.setSunAngles(3, 250);
-  else sun.setSunAngles(-40, 0);
+  sun = new DirectionalLight(0xfff4e8, 100000);
   scene.add(sun);
-  scene.environment = tokyoSky(sun);
-  if (night) scene.wetness = 1;
+  scene.environment = tokyoSky(sun, { dynamic: true });
   const b = far.bounds;
   const land = new Mesh(new PlaneGeometry(200000, 200000), new MeshStandardMaterial({ color: 0x3b3a36, roughness: 0.95 }));
   land.rotation.x = -Math.PI / 2;
   land.position.set((b.minX + b.maxX) / 2, 15, (b.minZ + b.maxZ) / 2);
   scene.add(land);
-  // the ground of every tile: its roads in scanned asphalt and pavers, wet by night
-  const tex = (id: string, size: number) => { const t = new Texture(`assets/polyhaven/tex/${id}/${id}_diff_2k.jpg`); t.repeat = [1 / size, 1 / size]; return t; };
-  const road = (id: string, size: number, puddles: number) => new SurfaceMaterial({ map: tex(id, size), normalMap: new Texture(`assets/polyhaven/tex/${id}/${id}_nor_gl_2k.jpg`, "linear"), roughnessMap: new Texture(`assets/polyhaven/tex/${id}/${id}_rough_2k.jpg`, "linear"), worldScale: size, wet: 1, puddles: night ? { scale: 2.5, amount: puddles } : undefined, grime: { amount: 0.3, scale: 3 } });
-  const functions = { "road 0 ": road("asphalt_02", 3.5, 0.45).shader!, "road 1 ": road("concrete_pavers", 1.6, 0.2).shader!, "road 3 ": road("concrete_floor_worn_001", 2.5, 0.2).shader!, ...(night ? { paint: wetLayer({ puddles: 0.4 }) } : {}) };
-  const tod = night ? "night" : "day";
+  // the ground of every tile: its roads in generated asphalt and pavers, wet by night
+  const tex = (id: string, size: number) => { const t = finishMap(id, "color"); t.repeat = [1 / size, 1 / size]; return t; };
+  const road = (id: string, size: number, puddles: number) => new SurfaceMaterial({ map: tex(id, size), normalMap: finishMap(id, "normal"), roughnessMap: finishMap(id, "rough"), worldScale: size, wet: 1, puddles: { scale: 2.5, amount: puddles }, grime: { amount: 0.3, scale: 3 } });
+  const functions = { "road 0 ": road("asphalt", 3.5, 0.45).shader!, "road 1 ": road("pavers", 1.6, 0.2).shader!, "road 3 ": road("concrete-worn", 2.5, 0.2).shader!, paint: wetLayer({ puddles: 0.4 }) };
   for (const t of far.tiles) {
     const uri = `assets/city/glb/${AREA}-far/${t.file}`;
     scene.add(new GLTFModel(uri, { nodes: ["ground"], functions }));
     const has = new Set((t as { nodes?: string[] }).nodes ?? []);
     for (let q = 0; q < 4; q++) {
       // (only the nodes the tile has: a model of none draws nothing and cannot be hidden in place)
-      const bn = [`b${q}`, `b${q}-${tod}`, `p${q}`, `p${q}-${tod}`].filter((n) => has.has(n));
-      const bm = bn.length ? new GLTFModel(uri, { nodes: bn }) : null;
-      const tm = has.has(`t${q}`) ? new GLTFModel(uri, { nodes: [`t${q}`] }) : null;
-      if (bm) scene.add(bm);
-      if (tm) scene.add(tm);
-      farQ.set(`${t.x}_${t.z}_${q}`, { b: bm, t: tm });
+      const model = (names: string[], lights = false) => {
+        const nodes = names.filter((n) => has.has(n));
+        if (!nodes.length) return null;
+        const m = new GLTFModel(uri, { nodes, ...(lights ? { functions: { "window lit far ": farWindows, "signs night ": farSigns } } : {}) });
+        if (lights && !night) m.power = 0;
+        scene.add(m);
+        return m;
+      };
+      farQ.set(`${t.x}_${t.z}_${q}`, {
+        covered: false,
+        base: model([`b${q}`, `p${q}`, `t${q}`]),
+        lights: model([`b${q}-night`, `p${q}-night`], true),
+      });
     }
   }
   // the library: every material and model the baked cells use, in the scene from the start (so cells add in place)
-  const M = heroMaterials(night);
-  PM = propMaterials(night);
-  lib = new Map();
-  const collect = (v: unknown, depth = 0) => {
-    if (v instanceof MeshStandardMaterial) { if (!lib.has(v.name)) lib.set(v.name, v); return; }
-    if (depth > 3 || !v || typeof v !== "object") return;
-    for (const x of Array.isArray(v) ? v : Object.values(v as object)) collect(x, depth + 1);
-  };
-  collect(M);
-  collect(PM);
-  for (let p = 0; p < SHOP_PAGES; p++) collect(M.shop(p));
-  if (night) {
-    for (const m of [...lib.values()]) {
-      if (!emits(m)) continue;
-      const k = m.emissiveIntensity;
-      const u = new MeshBasicMaterial({ name: `${m.name} ~unlit`, color: [m.emissive.r * k, m.emissive.g * k, m.emissive.b * k], map: m.emissiveMap ?? m.map ?? null });
-      unlitOf.set(m, u);
-      lib.set(u.name, u);
+  PM = propMaterials(true);
+  lib = collectMaterials(heroMaterials(true), PM);
+  const daylight = collectMaterials(heroMaterials(false), propMaterials(false));
+  for (const m of [...lib.values()]) {
+    if (!emits(m)) continue;
+    const k = m.emissiveIntensity;
+    const day = daylight.get(m.name)!.emissiveIntensity;
+    if (day !== k) {
+      const d = m.clone();
+      d.name = `${m.name} ~day`;
+      d.emissiveIntensity = day;
+      dayOf.set(m, d);
     }
+    const mid = m.clone();
+    mid.name = `${m.name} ~mid`;
+    mid.emissiveIntensity = 0;
+    const glow = m.emissiveMap ?? m.map;
+    mid.shader = midGlow.with({ IsNight: night ? 1 : 0, DayNits: day, NightNits: k, Tint: [m.emissive.r, m.emissive.g, m.emissive.b, 0] }, glow ? { Glow: glow } : {});
+    midOf.set(m, mid);
+    lib.set(mid.name, mid);
   }
+  for (const d of dayOf.values()) lib.set(d.name, d);
   const swatch = new BufferGeometry();
   swatch.positions = new Float32Array([0, 0, 0, 0.01, 0, 0, 0, 0, 0.01]);
   swatch.normals = new Float32Array([0, 1, 0, 0, 1, 0, 0, 1, 0]);
@@ -330,27 +418,27 @@ export function sceneFor(room: string) {
     for (const o of place({ p: kind, v, at: [b.minX + 10 + v * 3, -80, b.minZ + Object.keys(VARIANTS).indexOf(kind) * 3], ry: 0 })) scene.add(o);
   }
   for (const [key, m] of Object.entries(MODELS)) {
-    const g = new GLTFModel(m.uri, m.node ? { nodes: [m.node] } : {});
+    const g = new GLTFModel(m.uri);
     g.position.set(b.minX, -60 - Object.keys(MODELS).indexOf(key) * 5, b.minZ);
     scene.add(g);
   }
   // the cells of the baked area
   for (const key of Object.keys((baked as { cells: Record<string, unknown> }).cells)) {
     const [i, j] = key.split("_").map(Number);
-    const roots: [Group, Group] = [new Group(), new Group()];
-    roots.forEach((g, l) => { g.name = `cell ${i} ${j} L${l}`; scene.add(g); });
-    cells.set(key, { i, j, level: -1, roots, loading: null });
+    const roots: [Group, Group, Group] = [new Group(), new Group(), new Group()];
+    roots.forEach((g, l) => { g.name = `cell ${i} ${j} ${["L0", "L1", "L0b"][l]}`; scene.add(g); });
+    cells.set(key, { i, j, level: -1, roots, shown: null, night: time === "night", loading: null });
   }
   // the camera: Golden Gai's middle alley by default
   // ("-at=x,z" at street level, "-at=x,y,z" anywhere)
   const [sx, sy, sz] = at ? (at[3] ? [Number(at[1]), Number(at[2]), Number(at[3])] : [Number(at[1]), 34, Number(at[2])]) : [359.8, 32.3, -496.6];
   cam.pos = [sx, sy, sz];
-  cam.yaw = (22 * Math.PI) / 180;
-  cam.pitch = 0;
+  cam.yaw = (look ? Number(look[1]) : 22) * Math.PI / 180;
+  cam.pitch = look ? Math.max(-1.5, Math.min(1.5, Number(look[2]) * Math.PI / 180)) : 0;
   const camera = new PerspectiveCamera(70, 16 / 9, 0.05, 30000);
   camera.name = "camera";
   aim(camera);
-  camera.setManualExposure(night ? 3.2 : time === "dusk" ? 8.5 : 11.5);
+  setTime(time, camera);
   scene.add(camera);
   // the first cells round the start, whole, so the first frame shows them
   for (let n = 0; n < 100_000; n++) {
@@ -372,8 +460,13 @@ function aim(camera: PerspectiveCamera) {
 
 export default defineGame<Record<string, never>>({
   state: {},
-  handlers: {},
-  keys: {},
+  keys: { "1": "day", "2": "dusk", "3": "night", T: "cycleTime" },
+  on: {
+    day: (world) => setTime("day", world.camera),
+    dusk: (world) => setTime("dusk", world.camera),
+    night: (world) => setTime("night", world.camera),
+    cycleTime: (world) => setTime(time === "day" ? "dusk" : time === "dusk" ? "night" : "day", world.camera),
+  },
   pointer: "look",
   setup(ctx) {
     return sceneFor(ctx.roomId || "tokyo-night");

@@ -5,11 +5,10 @@
 //   node tools/tokyo/to-glb.ts [--area=shinjuku]      assets/city/tiles/<area> -> assets/city/glb/<area>/
 //
 // What each tile carries, by material:
-//   - the terrain under the area's aerial photo (GSI), cropped per tile;
+//   - the terrain from the elevation grid, meshed per tile;
 //   - road surfaces, kerbs, parks, water and paint, coloured as the source colours them (per-vertex colours, grouped
 //     into materials by quantised colour and ground layer);
-//   - buildings: walls and roofs by colour; PLATEAU's LOD2 roofs under the tile's photo atlas;
-//   - PLATEAU's own models (bridges, street furniture, trees), by quantised colour.
+//   - buildings: walls and roofs generated from footprints and survey heights;
 //   - windows: dark glass, and the lit ones (night) as emitters;
 //   - street props (tools/tokyo/props.ts): lights and poles with LED heads (emitters by night), signals, vending
 //     machines, parked cars, trees (park trees in clumps).
@@ -19,12 +18,12 @@
 //     client's atlas (cutouts would cost every ray the renderer's alpha-test loop).
 // Not yet: billboards and screens: ROADMAP § 0 step 1.
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import sharp from "sharp";
+
 import { decodeTile } from "../city/shared/tileformat.js";
 import { makeSurface } from "../city/shared/decks.js";
-import { makeProjection } from "../city/shared/geo.js";
+
 import { buildTile } from "../city/mesh/meshing.js";
 import { KIND, GROUND } from "../city/mesh/constants.js";
 import { repoRoot } from "../lib/paths.ts";
@@ -45,7 +44,7 @@ const exclude = flag("exclude")?.split(",").map(Number), only = flag("only")?.sp
 // `--strip=x0,z0,x1,z1`: the buildings alone left out of a wider box (dressed at mid distance)
 const strip = flag("strip")?.split(",").map(Number);
 const city = join(repoRoot, "assets/city");
-const tilesDir = join(city, "tiles", area), orthoDir = join(city, "ortho", area), outDir = join(city, "glb", flag("out") ?? area);
+const tilesDir = join(city, "tiles", area), outDir = join(city, "glb", flag("out") ?? area);
 mkdirSync(outDir, { recursive: true });
 
 type Manifest = {
@@ -59,45 +58,6 @@ const tb = readFileSync(join(tilesDir, t.file));
 const grid = { x0: t.x0, z0: t.z0, step: t.step, w: t.w, h: t.h, data: new Float32Array(tb.buffer, tb.byteOffset, tb.byteLength / 4) };
 const surface = makeSurface(grid, manifest.decks ?? []);
 const size = manifest.tileSize;
-
-// ---------------------------------------------------------------- the aerial photo, stitched once
-// GSI seamlessphoto tiles (Web Mercator) placed by their corners in the area's metres (over a 150 m tile the grid is as
-// good as linear), as ortho.js does; then cropped per tile.
-/** The land beyond the area's aerial photo (sRGB): games/tokyo's plane round the area, 0x3b3a36. */
-const LAND = { r: 0x3b, g: 0x3a, b: 0x36, alpha: 1 };
-/** Texels of margin round each tile's photo and each roof atlas. The renderer repeats every glTF texture, so
- *  filtering at a texture's edge reaches across to its other side; the margin holds what lies beyond the edge instead
- *  (the neighbouring photo; the atlas's edge texels), up to the fourth mip level. */
-const MARGIN = 16;
-const PX_PER_M = 2; // ground texture resolution (GSI z17 is ~1.2 m a pixel: 2 px/m keeps it, with filtering room)
-const proj = makeProjection(manifest.origin.lon, manifest.origin.lat);
-const tileLon = (x: number, z: number) => (x / 2 ** z) * 360 - 180;
-const tileLat = (y: number, z: number) => (Math.atan(Math.sinh(Math.PI * (1 - (2 * y) / 2 ** z))) * 180) / Math.PI;
-async function orthoMosaic() {
-  const indexFile = join(orthoDir, "index.json");
-  if (!existsSync(indexFile)) return null;
-  const { z, x0, x1, y0, y1 } = JSON.parse(readFileSync(indexFile, "utf8"));
-  const b = manifest.bounds, k = 1.2; // the mosaic at GSI z17's own resolution (~1.2 px/m), then resampled per tile
-  const W = Math.round((b.maxX - b.minX) * k), H = Math.round((b.maxZ - b.minZ) * k);
-  const comps: { input: Buffer; left: number; top: number }[] = [];
-  for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) {
-    const f = join(orthoDir, `${z}_${x}_${y}.jpg`);
-    if (!existsSync(f)) continue;
-    const [ax, az] = proj.project(tileLon(x, z), tileLat(y, z)), [bx, bz] = proj.project(tileLon(x + 1, z), tileLat(y + 1, z));
-    const left = Math.round((ax - b.minX) * k), top = Math.round((az - b.minZ) * k);
-    const w = Math.max(1, Math.round((bx - ax) * k) + 1), h = Math.max(1, Math.round((bz - az) * k) + 1);
-    if (left >= W || top >= H || left + w <= 0 || top + h <= 0) continue;
-    const img = await sharp(f).resize(w, h, { fit: "fill" }).toBuffer();
-    // (sharp's composite needs the overlay inside the canvas: crop what sticks out)
-    const cl = Math.max(0, -left), ct = Math.max(0, -top), cw = Math.min(w - cl, W - Math.max(0, left)), ch = Math.min(h - ct, H - Math.max(0, top));
-    if (cw <= 0 || ch <= 0) continue;
-    const piece = cl || ct || cw < w || ch < h ? await sharp(img).extract({ left: cl, top: ct, width: cw, height: ch }).toBuffer() : img;
-    comps.push({ input: piece, left: Math.max(0, left), top: Math.max(0, top) });
-  }
-  // (the composite comes back with an alpha channel: keep the channel count sharp reports, or every row shears)
-  const { data: raw, info } = await sharp({ create: { width: W, height: H, channels: 3, background: { r: 111, g: 110, b: 104 } } }).composite(comps).raw().toBuffer({ resolveWithObject: true });
-  return { raw, W, H, k, channels: info.channels as 3 | 4 };
-}
 
 // ---------------------------------------------------------------- materials
 const srgbToLin = (v: number) => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
@@ -150,24 +110,6 @@ function towerLamp(raw: number[]): { node: string; material: Material }[] {
   ];
 }
 const colorOf = (c: Float32Array, tri: number) => [c[tri * 9], c[tri * 9 + 1], c[tri * 9 + 2]];
-
-// PLATEAU's static models (tools/city/pipeline/meshes.mjs `encodeMesh`): u32 n, n x f32 position, n x u8 sRGB colour.
-function models(file: string) {
-  const buf = readFileSync(file), n = buf.readUInt32LE(0);
-  const position = new Float32Array(buf.buffer.slice(buf.byteOffset + 4, buf.byteOffset + 4 + n * 12));
-  const rgb = buf.subarray(4 + n * 12, 4 + n * 15);
-  const normal = new Float32Array(n * 3), color = new Float32Array(n * 3);
-  for (let i = 0; i < n * 3; i++) color[i] = srgbToLin(rgb[i] / 255);
-  for (let i = 0; i < n * 3; i += 9) {
-    const ux = position[i + 3] - position[i], uy = position[i + 4] - position[i + 1], uz = position[i + 5] - position[i + 2];
-    const vx = position[i + 6] - position[i], vy = position[i + 7] - position[i + 1], vz = position[i + 8] - position[i + 2];
-    let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
-    const l = Math.hypot(nx, ny, nz) || 1;
-    nx /= l; ny /= l; nz /= l;
-    for (let k = 0; k < 9; k += 3) { normal[i + k] = nx; normal[i + k + 1] = ny; normal[i + k + 2] = nz; }
-  }
-  return { position, normal, color };
-}
 
 // ---------------------------------------------------------------- windows
 // The source draws windows in its facade shader (src/world/materials.js upstream): a grid of bays (aFacade.x, integer =
@@ -290,7 +232,7 @@ function windows(bd: { position: Float32Array; normal: Float32Array; aFacade: Fl
 }
 
 // ---------------------------------------------------------------- tiles
-const ortho = await orthoMosaic();
+
 const totals = { tiles: 0, triangles: 0, buildings: 0, bytes: 0, images: 0, windows: 0, litWindows: 0, props: {} as Record<string, number>, signs: 0, decals: 0 };
 /** A signboard's luminance (nits) where its atlas is white: a backlit board by night, and the little it shows by day. */
 const SIGN_NITS = { day: 20, night: 200 };
@@ -299,7 +241,7 @@ const index: { x: number; z: number; file: string; triangles: number; buildings:
 const t0 = Date.now();
 const build = createHash("sha256");
 // `--city`: the far level of the streamed city (scene/city.game.ts): the tile's ground in node "ground" (terrain,
-// roads, paint, PLATEAU's models, the road symbols); its buildings, their windows and signs, its props and its trees by
+// roads, paint, the road symbols); its buildings, their windows and signs, its props and its trees by
 // 128 m quadrant q (0..3: +x half, then +z half) in nodes b<q> (lit windows and signs: b<q>-night / b<q>-day), p<q>
 // (lamp heads: p<q>-night / p<q>-day) and t<q>, so the scene can hide a quadrant's own when a nearer level shows it.
 const cityLevel = process.argv.includes("--city");
@@ -312,23 +254,9 @@ async function cityTile(tile: ReturnType<typeof decodeTile>, tl: Manifest["tiles
   {
     const tp = m.terrain.position as Float32Array;
     const uv = new Float32Array((tp.length / 3) * 2);
-    const T = size * PX_PER_M, inner = (t: number) => (MARGIN + t * T) / (T + 2 * MARGIN);
-    for (let i = 0, j = 0; i < tp.length; i += 3, j += 2) { uv[j] = inner((tp[i] - x0) / size); uv[j + 1] = inner((tp[i + 2] - z0) / size); }
-    let tex: number | undefined;
-    if (ortho) {
-      const b = manifest.bounds, k = ortho.k;
-      const left = Math.round((x0 - b.minX) * k), top = Math.round((z0 - b.minZ) * k), w = Math.round(size * k);
-      const mm = Math.round((w * MARGIN) / T), L0 = left - mm, T0 = top - mm, W0 = w + 2 * mm;
-      const ix0 = Math.max(0, L0), iy0 = Math.max(0, T0), ix1 = Math.min(ortho.W, L0 + W0), iy1 = Math.min(ortho.H, T0 + W0);
-      if (Math.min(ortho.W, left + w) > Math.max(0, left) && Math.min(ortho.H, top + w) > Math.max(0, top)) {
-        const jpg = await sharp(ortho.raw, { raw: { width: ortho.W, height: ortho.H, channels: ortho.channels } })
-          .extract({ left: ix0, top: iy0, width: ix1 - ix0, height: iy1 - iy0 })
-          .extend({ left: ix0 - L0, top: iy0 - T0, right: L0 + W0 - ix1, bottom: T0 + W0 - iy1, background: LAND })
-          .resize(T + 2 * MARGIN, T + 2 * MARGIN, { fit: "fill" }).removeAlpha().jpeg({ quality: 85 }).toBuffer();
-        tex = g.image(new Uint8Array(jpg), "image/jpeg");
-      }
-    }
-    g.triangles(g.material({ name: `ground ${tag}`, color: tex === undefined ? [0.16, 0.16, 0.15] : [1, 1, 1], roughness: 0.92, texture: tex }), tp, m.terrain.normal, uv, Uint32Array.from(m.terrain.index), "ground");
+    for (let i = 0, j = 0; i < tp.length; i += 3, j += 2) { uv[j] = tp[i] / 4; uv[j + 1] = tp[i + 2] / 4; }
+
+    g.triangles(g.material({ name: `ground ${tag}`, color: [0.14, 0.14, 0.12], roughness: 0.92 }), tp, m.terrain.normal, uv, Uint32Array.from(m.terrain.index), "ground");
   }
   for (const [kind, a] of [["road", m.roads], ["paint", m.paint]] as const) {
     if (!a.position.length) continue;
@@ -336,10 +264,6 @@ async function cityTile(tile: ReturnType<typeof decodeTile>, tl: Manifest["tiles
       const [, layer, q] = k.split(" ");
       return { name: k, color: fromQuant(q.split(",").map(Number)), roughness: kind === "paint" ? 0.6 : ROUGH[Number(layer)] ?? 0.85 };
     }, "ground");
-  }
-  if (tl.mesh && existsSync(join(tilesDir, tl.mesh))) {
-    const md = models(join(tilesDir, tl.mesh));
-    if (md.position.length) soupTo(g, md, (tri) => `model ${quant(colorOf(md.color, tri)).join(",")}`, (k) => ({ name: k, color: fromQuant(k.split(" ")[1].split(",").map(Number)), roughness: 0.8 }), "ground");
   }
   {
     const drape = createDraper(grid, surface, size);
@@ -368,7 +292,7 @@ async function cityTile(tile: ReturnType<typeof decodeTile>, tl: Manifest["tiles
     }
   }
   // buildings by quadrant
-  let roofTex: number | undefined;
+  
   for (let q = 0; q < 4; q++) {
     const bs = tile.buildings.filter((b: { polygons: Float32Array[][] }) => b.polygons[0]?.[0] && quad(...cen(b.polygons[0][0])) === q);
     const ss = tile.signs.filter((sg: { x: number; z: number }) => quad(sg.x, sg.z) === q);
@@ -398,14 +322,7 @@ async function cityTile(tile: ReturnType<typeof decodeTile>, tl: Manifest["tiles
       totals.windows += w.count;
       totals.litWindows += w.litCount;
     }
-    if (bd.photo.position.length && tl.atlas && existsSync(join(tilesDir, tl.atlas))) {
-      const atlas = readFileSync(join(tilesDir, tl.atlas)), meta = await sharp(atlas).metadata();
-      const AW = meta.width!, AH = meta.height!;
-      if (roofTex === undefined) roofTex = g.image(new Uint8Array(await sharp(atlas).extend({ top: MARGIN, bottom: MARGIN, left: MARGIN, right: MARGIN, extendWith: "copy" }).jpeg({ quality: 88 }).toBuffer()), "image/jpeg");
-      const ph = bd.photo, n = ph.position.length / 3;
-      const uv = Float32Array.from(ph.uv as ArrayLike<number>, (c, i) => (i % 2 ? (MARGIN + (1 - c) * AH) / (AH + 2 * MARGIN) : (MARGIN + c * AW) / (AW + 2 * MARGIN)));
-      g.triangles(g.material({ name: `roof photo ${tag}`, color: [1, 1, 1], roughness: 0.88, texture: roofTex }), ph.position, ph.normal, uv, Uint32Array.from({ length: n }, (_, i) => i), B);
-    }
+
     if (mq.signs?.length) {
       const sb = await signBoards(mq.signs);
       if (sb) {
@@ -448,7 +365,7 @@ for (const tl of manifest.tiles) {
     const [sx0, sz0, sx1, sz1] = strip;
     const c = (r: Float32Array) => { let x = 0, z = 0; for (let i = 0; i < r.length; i += 2) { x += r[i]; z += r[i + 1]; } return [x / (r.length / 2), z / (r.length / 2)]; };
     tile.buildings = tile.buildings.filter((b: { polygons: Float32Array[][] }) => { if (!b.polygons[0]?.[0]) return true; const [x, z] = c(b.polygons[0][0]); return !(x >= sx0 && x <= sx1 && z >= sz0 && z <= sz1); });
-    // and the trees (dressed with scanned trees)
+    // and the trees (dressed with shared EZ-Tree models)
     tile.props = tile.props.filter((p: { kind: number; x: number; z: number }) => p.kind !== PROP.TREE || !(p.x >= sx0 && p.x <= sx1 && p.z >= sz0 && p.z <= sz1));
   }
   if (exclude) {
@@ -477,32 +394,14 @@ for (const tl of manifest.tiles) {
   const g = new GlbBuilder();
   const tag = `${area}_${tl.x}_${tl.z}`;
 
-  // terrain under its crop of the aerial photo
+  // the terrain, one colour (uv in metres / 4)
   {
     const tp = m.terrain.position as Float32Array;
     const uv = new Float32Array((tp.length / 3) * 2);
     const x0 = tl.x * size, z0 = tl.z * size;
-    // the tile's square inside its photo's margin
-    const T = size * PX_PER_M, inner = (t: number) => (MARGIN + t * T) / (T + 2 * MARGIN);
-    for (let i = 0, j = 0; i < tp.length; i += 3, j += 2) { uv[j] = inner((tp[i] - x0) / size); uv[j + 1] = inner((tp[i + 2] - z0) / size); }
-    let tex: number | undefined;
-    if (ortho) {
-      // The tile's square in the mosaic and its margin; tiles round the edge overhang it (the mosaic covers the area's
-      // bounds): the part outside is padded with the land's colour, so the photo keeps its place under the roads and
-      // buildings.
-      const b = manifest.bounds, k = ortho.k;
-      const left = Math.round((x0 - b.minX) * k), top = Math.round((z0 - b.minZ) * k), w = Math.round(size * k);
-      const mm = Math.round((w * MARGIN) / T), L0 = left - mm, T0 = top - mm, W0 = w + 2 * mm;
-      const ix0 = Math.max(0, L0), iy0 = Math.max(0, T0), ix1 = Math.min(ortho.W, L0 + W0), iy1 = Math.min(ortho.H, T0 + W0);
-      if (Math.min(ortho.W, left + w) > Math.max(0, left) && Math.min(ortho.H, top + w) > Math.max(0, top)) {
-        const jpg = await sharp(ortho.raw, { raw: { width: ortho.W, height: ortho.H, channels: ortho.channels } })
-          .extract({ left: ix0, top: iy0, width: ix1 - ix0, height: iy1 - iy0 })
-          .extend({ left: ix0 - L0, top: iy0 - T0, right: L0 + W0 - ix1, bottom: T0 + W0 - iy1, background: LAND })
-          .resize(T + 2 * MARGIN, T + 2 * MARGIN, { fit: "fill" }).removeAlpha().jpeg({ quality: 85 }).toBuffer();
-        tex = g.image(new Uint8Array(jpg), "image/jpeg");
-      }
-    }
-    g.triangles(g.material({ name: `ground ${tag}`, color: tex === undefined ? [0.16, 0.16, 0.15] : [1, 1, 1], roughness: 0.92, texture: tex }), tp, m.terrain.normal, uv, Uint32Array.from(m.terrain.index));
+    for (let i = 0, j = 0; i < tp.length; i += 3, j += 2) { uv[j] = tp[i] / 4; uv[j + 1] = tp[i + 2] / 4; }
+
+    g.triangles(g.material({ name: `ground ${tag}`, color: [0.14, 0.14, 0.12], roughness: 0.92 }), tp, m.terrain.normal, uv, Uint32Array.from(m.terrain.index));
   }
 
   // road surfaces, kerbs, parks, water; then paint
@@ -546,24 +445,6 @@ for (const tl of manifest.tiles) {
     totals.windows += w.count;
     totals.litWindows += w.litCount;
   }
-  // PLATEAU's LOD2 roofs under the tile's photo atlas
-  if (bd.photo.position.length && tl.atlas && existsSync(join(tilesDir, tl.atlas))) {
-    // the atlas with a margin of its own edge texels (MARGIN)
-    const atlas = readFileSync(join(tilesDir, tl.atlas)), meta = await sharp(atlas).metadata();
-    const AW = meta.width!, AH = meta.height!;
-    const framed = await sharp(atlas).extend({ top: MARGIN, bottom: MARGIN, left: MARGIN, right: MARGIN, extendWith: "copy" }).jpeg({ quality: 88 }).toBuffer();
-    const tex = g.image(new Uint8Array(framed), "image/jpeg");
-    const ph = bd.photo, n = ph.position.length / 3;
-    // (the atlas's coordinates have v up, as the source app's GL textures read them; glTF's v runs down the image)
-    const uv = Float32Array.from(ph.uv as ArrayLike<number>, (c, i) => (i % 2 ? (MARGIN + (1 - c) * AH) / (AH + 2 * MARGIN) : (MARGIN + c * AW) / (AW + 2 * MARGIN)));
-    g.triangles(g.material({ name: `roof photo ${tag}`, color: [1, 1, 1], roughness: 0.88, texture: tex }), ph.position, ph.normal, uv, Uint32Array.from({ length: n }, (_, i) => i));
-  }
-  // PLATEAU's own models
-  if (tl.mesh && existsSync(join(tilesDir, tl.mesh))) {
-    const md = models(join(tilesDir, tl.mesh));
-    if (md.position.length) soup(g, md, (tri) => `model ${quant(colorOf(md.color, tri)).join(",")}`, (k) => ({ name: k, color: fromQuant(k.split(" ")[1].split(",").map(Number)), roughness: 0.8 }));
-  }
-
   // street props: lights and poles (their LED heads lit in the "night" node), signals, vending machines, parked cars, trees
   if (m.props.length) {
     const p = propSoups(m.props, (x, z) => surface(x, z));

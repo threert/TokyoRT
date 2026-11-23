@@ -9,9 +9,10 @@ git submodule update --init
 npm ci --no-audit --no-fund
 (cd engine && npm ci --no-audit --no-fund)
 (cd engine/renderer && cargo build --release)
-# Poly Haven (CC0): scanned materials and props
-node tools/polyhaven.ts --res 2k
-node tools/polyhaven.ts --res 1k --set tree
+# the materials, street furniture and trees, generated (no scanned or photographed assets)
+node tools/tokyo/surfaces.ts
+node tools/tokyo/street-models.ts
+npm run trees
 # the city: PLATEAU, OpenStreetMap and GSI, compiled into 256 m tiles (tools/city, from jeantimex/tokyo)
 node tools/tokyo/prefetch-plateau.mjs --area="$AREA"
 node tools/tokyo/prefetch-osm.mjs --area="$AREA"
@@ -25,4 +26,4 @@ node tools/tokyo/hero-props-textures.ts
 # the near levels: every 128 m cell dressed at mid distance (L1) and at street level (L0)
 node --max-old-space-size=24000 tools/tokyo/city-bake.ts --area="$AREA"
 node tools/bundle.ts
-echo "done: tools/demo.sh night"
+echo "done: tools/demo.sh day"

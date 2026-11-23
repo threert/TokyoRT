@@ -7,7 +7,8 @@
   "scripts": {
     "setup": "sh tools/setup.sh",
     "demo": "sh tools/demo.sh",
-    "typecheck": "tsc -p ."
+    "typecheck": "tsc -p .",
+    "trees": "tsx tools/tokyo/trees.ts"
   },
   "dependencies": {
     "@threert/gameplay": "file:engine/packages/gameplay",
@@ -18,7 +19,11 @@
     "sharp": "^0.35.5"
   },
   "devDependencies": {
+    "@dgreenheck/ez-tree": "https://codeload.github.com/dgreenheck/ez-tree/tar.gz/dcf309bd86bd521083d9c70f01f2de45fdc7c457",
     "@types/node": "^24.0.0",
+    "@types/three": "0.185.0",
+    "three": "0.187.0",
+    "tsx": "4.21.0",
     "typescript": "^5.9.3"
   }
 }

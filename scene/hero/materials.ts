@@ -1,21 +1,21 @@
-// The hero district's materials: scanned PBR sets (Poly Haven, CC0) as SurfaceMaterials on mesh UVs in metres (each
+// The hero district's materials: generated tileable PBR finishes as SurfaceMaterials on mesh UVs in metres (each
 // texture repeats at its real size), with grime and wetness; glass; and the lit things (signs, lanterns, rooms).
 import { MeshPhysicalMaterial, MeshStandardMaterial, SurfaceMaterial, Texture } from "@threert/scene";
 import { shopPage } from "./shops.ts";
 
-const PH = "assets/polyhaven/tex";
+import { finishMap } from "./finish.ts";
 const HERO = "assets/city/hero/tex";
 
-/** A Poly Haven set as a SurfaceMaterial: `size` m per repeat; `tint` multiplies the colour map. */
-function scan(id: string, size: number, o: { tint?: [number, number, number]; rough?: number; metal?: boolean; wet?: number; grime?: number; puddles?: number; normal?: number; name?: string } = {}) {
-  const map = new Texture(`${PH}/${id}/${id}_diff_2k.jpg`);
+/** A generated finish as a SurfaceMaterial: `size` m per repeat; `tint` multiplies the colour map. */
+function finish(id: string, size: number, o: { tint?: [number, number, number]; rough?: number; metal?: boolean; wet?: number; grime?: number; puddles?: number; normal?: number; name?: string } = {}) {
+  const map = finishMap(id, "color");
   map.repeat = [1 / size, 1 / size];
   return new SurfaceMaterial({
     name: o.name ?? id,
     map,
-    normalMap: new Texture(`${PH}/${id}/${id}_nor_gl_2k.jpg`, "linear"),
-    roughnessMap: new Texture(`${PH}/${id}/${id}_rough_2k.jpg`, "linear"),
-    ...(o.metal ? { metalnessMap: new Texture(`${PH}/${id}/${id}_metal_2k.jpg`, "linear"), metalness: 1 } : {}),
+    normalMap: finishMap(id, "normal"),
+    roughnessMap: finishMap(id, "rough"),
+    ...(o.metal ? { metalnessMap: finishMap(id, "metal"), metalness: 1 } : {}),
     normalScale: o.normal ?? 1,
     color: o.tint ?? [1, 1, 1],
     roughness: o.rough ?? 1,
@@ -38,70 +38,70 @@ export function heroMaterials(night: boolean) {
   // walls: Tokyo about 1980, kept up. Small buildings: painted mortar and stucco in pale colours, cream and brown
   // tile, clean timber and sheet metal; weathering only as light streaks (grime low).
   const walls = [
-    scan("white_stucco", 2.4, { normal: 0.45, grime: 0.15, wet: 0.25, tint: [1, 0.96, 0.88], name: "wall stucco cream" }),
-    scan("white_stucco", 2.4, { normal: 0.45, grime: 0.15, wet: 0.25, tint: [1, 0.93, 0.76], name: "wall stucco yellow" }),
-    scan("white_stucco_02", 2.4, { normal: 0.45, grime: 0.15, wet: 0.25, tint: [0.86, 0.95, 0.87], name: "wall stucco green" }),
-    scan("white_stucco_02", 2.4, { normal: 0.45, grime: 0.15, wet: 0.25, tint: [0.86, 0.92, 1.0], name: "wall stucco blue" }),
-    scan("painted_plaster_wall", 2.5, { normal: 0.6, grime: 0.15, wet: 0.25, tint: [1.0, 0.86, 0.76], name: "wall plaster salmon" }),
-    scan("plastered_wall_02", 3, { grime: 0.12, wet: 0.25, name: "wall plaster cream" }),
-    scan("white_plaster_02", 2.4, { grime: 0.15, wet: 0.25, tint: [0.95, 0.94, 0.92], name: "wall plaster white" }),
-    scan("long_white_tiles", 1.6, { grime: 0.12, wet: 0.3, name: "wall tiles cream" }),
-    scan("long_white_tiles", 1.6, { grime: 0.12, wet: 0.3, tint: [0.66, 0.5, 0.38], name: "wall tiles brown" }),
-    scan("exterior_wall_cladding_02", 2, { grime: 0.1, wet: 0.3, name: "wall tiles terracotta" }),
-    scan("brick_wall_10", 2, { grime: 0.1, wet: 0.3, name: "wall tiles dark brown" }),
-    scan("corrugated_iron_02", 1.6, { tint: [1.3, 1.25, 1.1], grime: 0.1, wet: 0.3, name: "wall sheet cream" }),
-    scan("corrugated_iron_02", 1.6, { tint: [0.85, 1.15, 1.0], grime: 0.1, wet: 0.3, name: "wall sheet green" }),
-    scan("japanese_cedar_planks", 1.4, { grime: 0.1, wet: 0.2, name: "wall cedar" }),
-    scan("black_painted_planks", 1.3, { grime: 0.05, wet: 0.2, name: "wall black planks" }),
+    finish("stucco-cream", 2.4, { normal: 0.45, grime: 0.15, wet: 0.25, tint: [1, 0.96, 0.88], name: "wall stucco cream" }),
+    finish("stucco-cream", 2.4, { normal: 0.45, grime: 0.15, wet: 0.25, tint: [1, 0.93, 0.76], name: "wall stucco yellow" }),
+    finish("stucco-grey", 2.4, { normal: 0.45, grime: 0.15, wet: 0.25, tint: [0.86, 0.95, 0.87], name: "wall stucco green" }),
+    finish("stucco-grey", 2.4, { normal: 0.45, grime: 0.15, wet: 0.25, tint: [0.86, 0.92, 1.0], name: "wall stucco blue" }),
+    finish("plaster-painted", 2.5, { normal: 0.6, grime: 0.15, wet: 0.25, tint: [1.0, 0.86, 0.76], name: "wall plaster salmon" }),
+    finish("plaster-warm", 3, { grime: 0.12, wet: 0.25, name: "wall plaster cream" }),
+    finish("plaster-white", 2.4, { grime: 0.15, wet: 0.25, tint: [0.95, 0.94, 0.92], name: "wall plaster white" }),
+    finish("tiles-long-white", 1.6, { grime: 0.12, wet: 0.3, name: "wall tiles cream" }),
+    finish("tiles-long-white", 1.6, { grime: 0.12, wet: 0.3, tint: [0.66, 0.5, 0.38], name: "wall tiles brown" }),
+    finish("tiles-cladding-terracotta", 2, { grime: 0.1, wet: 0.3, name: "wall tiles terracotta" }),
+    finish("brick", 2, { grime: 0.1, wet: 0.3, name: "wall tiles dark brown" }),
+    finish("sheet-corrugated", 1.6, { tint: [1.3, 1.25, 1.1], grime: 0.1, wet: 0.3, name: "wall sheet cream" }),
+    finish("sheet-corrugated", 1.6, { tint: [0.85, 1.15, 1.0], grime: 0.1, wet: 0.3, name: "wall sheet green" }),
+    finish("planks-cedar", 1.4, { grime: 0.1, wet: 0.2, name: "wall cedar" }),
+    finish("planks-black", 1.3, { grime: 0.05, wet: 0.2, name: "wall black planks" }),
   ];
   // how often each is drawn (same order)
   const wallWeights = [5, 3, 2, 2, 2, 3, 3, 3, 3, 2, 2, 1, 1, 2, 1];
   // the bigger buildings: tile-clad (cream, brown, terracotta, grey), stucco and painted concrete
   const bigWalls = [
-    scan("long_white_tiles", 1.8, { grime: 0.15, name: "big tiles cream" }),
-    scan("long_white_tiles", 1.8, { grime: 0.15, tint: [0.62, 0.47, 0.36], name: "big tiles brown" }),
-    scan("long_white_tiles", 1.8, { grime: 0.15, tint: [0.88, 0.8, 0.66], name: "big tiles beige" }),
-    scan("exterior_wall_cladding_02", 2.2, { grime: 0.12, name: "big tiles terracotta" }),
-    scan("brick_wall_10", 2.2, { grime: 0.12, name: "big tiles dark brown" }),
-    scan("exterior_wall_cladding", 2.5, { grime: 0.15, tint: [1.05, 1.0, 0.92], name: "big tiles grey beige" }),
-    scan("rectangular_facade_tiles", 3, { grime: 0.15, tint: [1.15, 1.1, 1.0], name: "big tiles warm grey" }),
-    scan("white_stucco_02", 3, { normal: 0.45, grime: 0.2, tint: [0.92, 0.92, 0.9], name: "big stucco grey" }),
-    scan("white_stucco", 3, { normal: 0.45, grime: 0.2, tint: [1, 0.95, 0.85], name: "big stucco cream" }),
-    scan("painted_concrete_02", 3, { grime: 0.2, tint: [1.15, 1.12, 1.08], name: "big painted concrete" }),
+    finish("tiles-long-white", 1.8, { grime: 0.15, name: "big tiles cream" }),
+    finish("tiles-long-white", 1.8, { grime: 0.15, tint: [0.62, 0.47, 0.36], name: "big tiles brown" }),
+    finish("tiles-long-white", 1.8, { grime: 0.15, tint: [0.88, 0.8, 0.66], name: "big tiles beige" }),
+    finish("tiles-cladding-terracotta", 2.2, { grime: 0.12, name: "big tiles terracotta" }),
+    finish("brick", 2.2, { grime: 0.12, name: "big tiles dark brown" }),
+    finish("tiles-cladding", 2.5, { grime: 0.15, tint: [1.05, 1.0, 0.92], name: "big tiles grey beige" }),
+    finish("tiles-facade", 3, { grime: 0.15, tint: [1.15, 1.1, 1.0], name: "big tiles warm grey" }),
+    finish("stucco-grey", 3, { normal: 0.45, grime: 0.2, tint: [0.92, 0.92, 0.9], name: "big stucco grey" }),
+    finish("stucco-cream", 3, { normal: 0.45, grime: 0.2, tint: [1, 0.95, 0.85], name: "big stucco cream" }),
+    finish("concrete-painted", 3, { grime: 0.2, tint: [1.15, 1.12, 1.08], name: "big painted concrete" }),
   ];
   /** Trim: the bands, piers and crowns that break a facade up (a second finish against the wall's). */
   const trims = [
-    scan("white_stucco", 2, { normal: 0.45, grime: 0.15, tint: [0.97, 0.96, 0.93], name: "trim white" }),
-    scan("long_white_tiles", 1.2, { grime: 0.1, tint: [0.5, 0.38, 0.3], name: "trim brown tile" }),
-    scan("painted_concrete_02", 2, { grime: 0.15, tint: [0.85, 0.85, 0.85], name: "trim concrete" }),
-    scan("exterior_wall_cladding_02", 1.6, { grime: 0.1, tint: [0.8, 0.7, 0.62], name: "trim terracotta" }),
+    finish("stucco-cream", 2, { normal: 0.45, grime: 0.15, tint: [0.97, 0.96, 0.93], name: "trim white" }),
+    finish("tiles-long-white", 1.2, { grime: 0.1, tint: [0.5, 0.38, 0.3], name: "trim brown tile" }),
+    finish("concrete-painted", 2, { grime: 0.15, tint: [0.85, 0.85, 0.85], name: "trim concrete" }),
+    finish("tiles-cladding-terracotta", 1.6, { grime: 0.1, tint: [0.8, 0.7, 0.62], name: "trim terracotta" }),
   ];
-  const plinth = scan("painted_concrete_02", 2, { tint: [0.8, 0.8, 0.8], grime: 0.4, wet: 0.5, name: "plinth" });
-  const coping = scan("white_stucco_02", 2, { normal: 0.45, tint: [0.85, 0.85, 0.84], grime: 0.25, wet: 0.6, name: "coping" });
-  const roof = scan("dirty_concrete", 4, { tint: [0.78, 0.78, 0.78], grime: 0.3, wet: 0.3, name: "roof slab" });
+  const plinth = finish("concrete-painted", 2, { tint: [0.8, 0.8, 0.8], grime: 0.4, wet: 0.5, name: "plinth" });
+  const coping = finish("stucco-grey", 2, { normal: 0.45, tint: [0.85, 0.85, 0.84], grime: 0.25, wet: 0.6, name: "coping" });
+  const roof = finish("concrete-weathered", 4, { tint: [0.78, 0.78, 0.78], grime: 0.3, wet: 0.3, name: "roof slab" });
   // the roofs' finishes: concrete, green and grey waterproof coats; painted sheet metal on small houses
   const roofs = [
     roof,
-    scan("concrete_floor_painted", 3, { tint: [0.55, 0.68, 0.6], grime: 0.3, wet: 0.3, name: "roof coat green" }),
-    scan("concrete_floor_painted", 3, { tint: [0.62, 0.63, 0.66], grime: 0.3, wet: 0.3, name: "roof coat grey" }),
-    scan("concrete_floor_worn_001", 3, { tint: [0.76, 0.76, 0.74], grime: 0.3, wet: 0.3, name: "roof worn" }),
-    scan("brushed_concrete", 3, { tint: [0.66, 0.66, 0.66], grime: 0.3, wet: 0.3, name: "roof brushed" }),
+    finish("concrete-coated", 3, { tint: [0.55, 0.68, 0.6], grime: 0.3, wet: 0.3, name: "roof coat green" }),
+    finish("concrete-coated", 3, { tint: [0.62, 0.63, 0.66], grime: 0.3, wet: 0.3, name: "roof coat grey" }),
+    finish("concrete-worn", 3, { tint: [0.76, 0.76, 0.74], grime: 0.3, wet: 0.3, name: "roof worn" }),
+    finish("concrete-brushed", 3, { tint: [0.66, 0.66, 0.66], grime: 0.3, wet: 0.3, name: "roof brushed" }),
   ];
-  const roofsSmall = [...roofs, scan("corrugated_iron_02", 1.6, { tint: [0.7, 0.9, 1.15], wet: 0.3, name: "roof sheet blue" }), scan("corrugated_iron_02", 1.6, { tint: [1.0, 0.75, 0.6], wet: 0.3, name: "roof sheet brown" })];
-  const ground = scan("asphalt_02", 3.5, { wet: 1, puddles: night ? 0.45 : 0, grime: 0.3, tint: [0.92, 0.92, 0.94], name: "alley asphalt" });
-  const groundB = scan("clean_asphalt", 3.5, { wet: 1, puddles: night ? 0.4 : 0, grime: 0.2, tint: [0.85, 0.85, 0.86], name: "alley asphalt worn" });
-  const gutter = scan("concrete_floor_worn_001", 1.5, { wet: 1, grime: 0.3, name: "gutter concrete" });
-  const grate = scan("metal_grate_rusty", 1, { metal: true, wet: 1, name: "gutter grate" });
+  const roofsSmall = [...roofs, finish("sheet-corrugated", 1.6, { tint: [0.7, 0.9, 1.15], wet: 0.3, name: "roof sheet blue" }), finish("sheet-corrugated", 1.6, { tint: [1.0, 0.75, 0.6], wet: 0.3, name: "roof sheet brown" })];
+  const ground = finish("asphalt", 3.5, { wet: 1, puddles: night ? 0.45 : 0, grime: 0.3, tint: [0.92, 0.92, 0.94], name: "alley asphalt" });
+  const groundB = finish("asphalt-fresh", 3.5, { wet: 1, puddles: night ? 0.4 : 0, grime: 0.2, tint: [0.85, 0.85, 0.86], name: "alley asphalt worn" });
+  const gutter = finish("concrete-worn", 1.5, { wet: 1, grime: 0.3, name: "gutter concrete" });
+  const grate = finish("grate", 1, { metal: true, wet: 1, name: "gutter grate" });
   const doorWood = [
-    scan("japanese_cedar_planks", 1.6, { name: "door cedar" }),
-    scan("dark_wooden_planks", 1.6, { name: "door dark" }),
-    scan("black_painted_planks", 1.6, { name: "door black" }),
-    scan("dark_wooden_planks", 1.6, { tint: [0.75, 0.55, 0.4], name: "door teak" }),
+    finish("planks-cedar", 1.6, { name: "door cedar" }),
+    finish("planks-dark", 1.6, { name: "door dark" }),
+    finish("planks-black", 1.6, { name: "door black" }),
+    finish("planks-dark", 1.6, { tint: [0.75, 0.55, 0.4], name: "door teak" }),
   ];
-  const shutter = scan("painted_metal_shutter", 2.4, { tint: [0.82, 0.84, 0.86], name: "shutter silver" });
-  const shutterPainted = scan("painted_metal_shutter", 2.4, { name: "shutter painted" });
-  const corrugatedEave = scan("corrugated_iron_02", 1.5, { metal: true, wet: 1, name: "eave corrugated" });
-  const rustyMetal = scan("rusty_painted_metal", 1.5, { name: "rusty painted metal" });
+  const shutter = finish("shutter", 2.4, { tint: [0.82, 0.84, 0.86], name: "shutter silver" });
+  const shutterPainted = finish("shutter", 2.4, { name: "shutter painted" });
+  const corrugatedEave = finish("sheet-corrugated", 1.5, { metal: true, wet: 1, name: "eave corrugated" });
+  const rustyMetal = finish("metal-painted", 1.5, { name: "rusty painted metal" });
 
   const aluminium = new MeshStandardMaterial({ name: "aluminium frame", color: 0x8d8f91, roughness: 0.35, metalness: 1 });
   const aluminiumDark = new MeshStandardMaterial({ name: "aluminium bronze", color: 0x3b3228, roughness: 0.4, metalness: 1 });
@@ -115,7 +115,7 @@ export function heroMaterials(night: boolean) {
   const pvcDark = new MeshStandardMaterial({ name: "pvc dark", color: 0x3a3a38, roughness: 0.5 });
   const cable = new MeshStandardMaterial({ name: "cable", color: 0x0c0c0c, roughness: 0.6 });
   const cableGrey = new MeshStandardMaterial({ name: "cable grey", color: 0x5a5a58, roughness: 0.6 });
-  const concretePole = scan("concrete_wall_004", 1.2, { tint: [0.78, 0.78, 0.76], grime: 0.6, name: "pole concrete" });
+  const concretePole = finish("concrete-wall", 1.2, { tint: [0.78, 0.78, 0.76], grime: 0.6, name: "pole concrete" });
   const insulator = new MeshStandardMaterial({ name: "insulator", color: 0xe8e6e0, roughness: 0.15 });
   const transformer = new MeshStandardMaterial({ name: "transformer", color: 0x9da39f, roughness: 0.4, metalness: 0.3 });
 
