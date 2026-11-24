@@ -101,8 +101,8 @@ export function dressDistrict(data: HeroData, M: Mats, night: boolean, seed = 11
    *  their geometry (the renderer keeps one copy of each mesh). */
   type PropFn = (B: Batches, PM: ReturnType<typeof propMaterials>, at: V3, facing: V3, R: ReturnType<typeof rng>) => void;
   const protos = new Map<string, Mesh[]>();
-  const prop = (fn: PropFn, kind: string, variants: number, at: V3, facing: V3) => {
-    const v = R.int(variants), k = `${kind} ${v}`;
+  const prop = (fn: PropFn, kind: string, variants: number, at: V3, facing: V3, r = R) => {
+    const v = r.int(variants), k = `${kind} ${v}`;
     if (ab.record) {
       if (!ab.noProps) ab.record.push({ p: kind, v, at: [...at], ry: Math.atan2(facing[0], facing[2]) });
       count(kind);
@@ -194,7 +194,7 @@ export function dressDistrict(data: HeroData, M: Mats, night: boolean, seed = 11
 
   /** Exposed edges: walls that face an open alley (the space 1.2 m in front of them is no building's), or that rise
    *  well above the building in front of them: dressed from `from` (a height; -Infinity: from the ground) up. */
-  type Edge = { b: Bldg; f: Frame; L: number; y0: number; top: number; exposed: boolean; floors: number[]; small: boolean; from: number };
+  type Edge = { b: Bldg; f: Frame; L: number; y0: number; top: number; exposed: boolean; floors: number[]; small: boolean; from: number; seams?: number[] };
   const edges: Edge[] = [];
 
   /** One window design per building (Tokyo about 1980: aluminium sashes in silver, bronze, white or black; tall, wide,
@@ -284,6 +284,7 @@ export function dressDistrict(data: HeroData, M: Mats, night: boolean, seed = 11
       else if (exposed && L >= 2 && !ab.noMid) dressMid(e, openings, st, i === st.balconyEdge, i === st.longest);
       wall(e, openings, wallMat);
       if (exposed && L >= 2 && !ab.noMid && !(hero && small) && !st.highrise) secondary(e, st, openings, i === st.longest);
+      if (exposed && hero && small) secondarySmall(e, openings);
     }
     // the roof: a slab inside the parapet, the coping on the walls round it, and what stands up there
     const ring = b.pts;
@@ -435,6 +436,79 @@ export function dressDistrict(data: HeroData, M: Mats, night: boolean, seed = 11
     }
   }
 
+  /**
+   * The same for Golden Gai's small buildings (roadmap 6b), where the user's review looked: what they did not have yet
+   * (they have their drain, cables, gas pipe and meter, AC units, signs, awnings and door steps already). The sealant
+   * joint between two units from the ground up, and where a door's step meets the wall; a grey conduit up from a seam to the
+   * roof line; a louvred kitchen vent beside some doors and round bathroom vents by some upper windows; a trim surround
+   * on the upper windows of some buildings; small sheet-metal hoods over some. Its own random stream (the wall's).
+   */
+  function secondarySmall(e: Edge, openings: Opening[]) {
+    if (ab.full === false) return;
+    const { f, L, floors, top } = e, base = f.o[1];
+    const r = rng(hashSeed(e.b.id, 83, Math.round(L * 10)));
+    const Yf = (y: number) => y - base;
+    const ground = floors[0], gTop = floors[1] ?? top;
+    const near = (s0: number, s1: number, y0: number, y1: number, own?: Opening) => openings.some((o) => o !== own && s1 > o.s0 - 0.06 && s0 < o.s1 + 0.06 && y1 > o.y0 - 0.04 && y0 < o.y1 + 0.04);
+    const doors = openings.filter((o) => o.y0 <= ground + 0.15 && o.y1 - o.y0 < 2.4 && o.s1 - o.s0 < 1.3);
+    const windows = openings.filter((o) => o.y0 >= gTop - 0.1);
+    // the units' seams: a sealant joint up the wall where it is wall
+    for (const s of e.seams ?? []) {
+      if (near(s - 0.02, s + 0.02, ground, top)) continue;
+      B.box(M.cable, f, s - 0.008, s + 0.008, Yf(ground + 0.05), Yf(top - 0.1), 0, 0.004, { skip: "btdlr" });
+      count("seams");
+    }
+    // the door's step (dressSmall's) meets the wall in a sealant joint
+    for (const o of doors) {
+      B.box(M.cable, f, o.s0 - 0.08, o.s1 + 0.08, Yf(ground) + 0.08, Yf(ground) + 0.095, 0, 0.004, { skip: "btdlr" });
+      count("step joints");
+    }
+    // a conduit up a seam (or an end) to the roof line, clipped every metre
+    if (r.chance(0.8)) {
+      const cs = (e.seams ?? [])[0] ?? (r.chance(0.5) ? 0.25 : L - 0.25), at = cs + 0.08;
+      if (!near(at - 0.03, at + 0.03, ground + 1.2, top)) {
+        B.tube(M.pvc, [f.p(at, Yf(ground + 1.2), 0.04), f.p(at, Yf(top - 0.2), 0.04)], 0.016, 6);
+        for (let y = ground + 1.6; y < top - 0.4; y += 1) B.box(M.steelDark, f, at - 0.03, at + 0.03, Yf(y), Yf(y) + 0.02, 0, 0.06);
+        count("conduits");
+      }
+    }
+    // a bar's kitchen vent beside the door: a louvred box low on the wall
+    for (const o of doors) {
+      if (!r.chance(0.35)) continue;
+      const vs = r.chance(0.5) ? o.s0 - 0.35 : o.s1 + 0.35, vy = ground + 2.1;
+      if (vs < 0.2 || vs > L - 0.2 || near(vs - 0.15, vs + 0.15, vy - 0.15, vy + 0.15)) continue;
+      B.begin(f, vs, Yf(vy));
+      B.box(M.galv, f, vs - 0.15, vs + 0.15, Yf(vy) - 0.15, Yf(vy) + 0.15, 0, 0.1);
+      for (let q = 0; q < 4; q++) B.box(M.steelDark, f, vs - 0.13, vs + 0.13, Yf(vy) - 0.12 + q * 0.07, Yf(vy) - 0.1 + q * 0.07, 0.1, 0.13);
+      B.end();
+      count("vents");
+    }
+    // the upper windows: a trim surround on some buildings, a small hood over some, a bathroom vent beside a few
+    const trim = r.chance(0.5), hooded = r.chance(0.4);
+    for (const o of windows) {
+      if (trim && !near(o.s0 - 0.09, o.s1 + 0.09, o.y0 - 0.09, o.y1 + 0.09, o)) {
+        B.box(M.coping, f, o.s0 - 0.09, o.s1 + 0.09, Yf(o.y1), Yf(o.y1) + 0.08, 0, 0.04, { skip: "blr" });
+        B.box(M.coping, f, o.s0 - 0.09, o.s0, Yf(o.y0) - 0.06, Yf(o.y1), 0, 0.04, { skip: "btd" });
+        B.box(M.coping, f, o.s1, o.s1 + 0.09, Yf(o.y0) - 0.06, Yf(o.y1), 0, 0.04, { skip: "btd" });
+        count("trims");
+      }
+      if (hooded && !near(o.s0 - 0.1, o.s1 + 0.1, o.y1 + 0.1, o.y1 + 0.22, o)) {
+        B.box(M.corrugatedEave, f, o.s0 - 0.1, o.s1 + 0.1, Yf(o.y1) + 0.12, Yf(o.y1) + 0.15, 0, 0.35, { skip: "blr" });
+        count("window hoods");
+      }
+      if (r.chance(0.2)) {
+        const vs = o.s1 + 0.3, vy = o.y1 - 0.1;
+        if (vs < L - 0.2 && !near(vs - 0.1, vs + 0.1, vy - 0.1, vy + 0.1)) {
+          B.begin(f, vs, Yf(vy));
+          B.tube(M.steelDark, [f.p(vs, Yf(vy), 0), f.p(vs, Yf(vy), 0.1)], 0.06, 10);
+          B.box(M.steelDark, f, vs - 0.08, vs + 0.08, Yf(vy) - 0.08, Yf(vy) + 0.08, 0.1, 0.11);
+          B.end();
+          count("vents");
+        }
+      }
+    }
+  }
+
   /** The rain's streaks down the wall from a sill (frame height `y`, s0..s1 along): a decal 0.9 m long, not below 0.3 m
    *  over the wall's foot (where the splash is). */
   /** The rain's streaks down the wall from a sill (frame height `y`, s0..s1 along): runs of dirt a centimetre or two
@@ -580,6 +654,7 @@ export function dressDistrict(data: HeroData, M: Mats, night: boolean, seed = 11
     const base = f.o[1], y0 = floors[0], gTop = floors[1] ?? floors[floors.length - 1];
     const units = Math.max(1, Math.round(L / R.range(2.6, 3.6)));
     const uw = L / units;
+    e.seams = Array.from({ length: units - 1 }, (_, k) => (k + 1) * uw);
     for (let k = 0; k < units; k++) {
       const s0 = k * uw + 0.12, s1 = (k + 1) * uw - 0.12, w = s1 - s0;
       if (w < 0.9) continue;
@@ -752,27 +827,41 @@ export function dressDistrict(data: HeroData, M: Mats, night: boolean, seed = 11
       // what stands by a door is what happens there (roadmap 6c): on the street front, the shop's welcome (its board,
       // potted plants by the door, the umbrella stand, a stool for the smokers); at a back door, the service (empty beer
       // cases stacked to go back, the propane, the bins and bin bags, the mop and bucket, the kitchen's exhaust duct)
+      // (what the door's props drew from the stream before 6c, drawn still and dropped: the shops after them in the cell,
+      // their names and signs, stay what they were. The groups below draw from a stream of their own.)
+      for (let pick = 0; pick < 2 && free1 - free0 > 0.35; pick++) {
+        const roll = R.next();
+        R.next();
+        if (roll < 0.14) { R.next(); const n = 1 + R.int(3); for (let q = 0; q < n; q++) R.next(); }
+        else if (roll < 0.19) R.next();
+        else if (roll < 0.22) { R.next(); R.next(); R.next(); }
+        else if (roll < 0.47) { R.next(); R.next(); R.next(); }
+        else if (roll < 0.62) R.next();
+        else if (roll < 0.8) { for (let q = 0; q < 2 + R.int(3); q++) { R.next(); R.next(); } }
+        else if (roll < 0.96) R.next();
+      }
+      const G = rng(hashSeed(seed, e.b.id, k, 67, Math.round(s0 * 10)));
       const room = free1 - free0;
       const nextTo = (q: number) => (left ? free0 + q : free1 - q);
       if (front) {
-        if (room > 0.5 && R.chance(0.45)) prop(aBoard, "aboard", 4, clutter(nextTo(0.25), 0.5), f.n);
+        if (room > 0.5 && G.chance(0.45)) prop(aBoard, "aboard", 4, clutter(nextTo(0.25), 0.5), f.n, G);
         // plants in pots on both sides of the door
         for (const side of [left ? ds0 - 0.2 : ds1 + 0.2, nextTo(0.15)]) {
-          if (!R.chance(0.55) || side < s0 + 0.1 || side > s1 - 0.1) continue;
-          if (R.chance(0.4)) for (let q = 0; q < 2 + R.int(2); q++) place("plant4", clutter(side + (q - 1) * 0.16, 0.15), f.n, R.range(1.2, 2.0), R.next() * 6);
-          else place(R.pick(["plant1", "plant2", "planter"] as const), clutter(side, 0.3), f.n, R.range(0.8, 1.0), R.next() * 6);
+          if (!G.chance(0.55) || side < s0 + 0.1 || side > s1 - 0.1) continue;
+          if (G.chance(0.4)) for (let q = 0; q < 2 + G.int(2); q++) place("plant4", clutter(side + (q - 1) * 0.16, 0.15), f.n, G.range(1.2, 2.0), G.next() * 6);
+          else place(G.pick(["plant1", "plant2", "planter"] as const), clutter(side, 0.3), f.n, G.range(0.8, 1.0), G.next() * 6);
         }
-        if (room > 0.9 && R.chance(0.3)) prop(umbrellaStand, "umbrellas", 4, clutter(nextTo(0.7), 0.25), f.n);
-        if (room > 1.2 && R.chance(0.2)) place("stool", clutter(nextTo(1.0), 0.4), f.n, 1, R.next() * 6);
+        if (room > 0.9 && G.chance(0.3)) prop(umbrellaStand, "umbrellas", 4, clutter(nextTo(0.7), 0.25), f.n, G);
+        if (room > 1.2 && G.chance(0.2)) place("stool", clutter(nextTo(1.0), 0.4), f.n, 1, G.next() * 6);
       } else {
         let q = 0.25;
-        if (room > q + 0.3 && R.chance(0.65)) { prop((b, pm, a, fc, r) => beerCases(b, pm, a, fc, r, 2 + R.int(4)), "beercases", 6, clutter(nextTo(q), 0.3), f.n); q += 0.5; }
-        if (room > q + 0.3 && R.chance(0.35)) { place("propane", clutter(nextTo(q), 0.25), f.n, 1, R.next() * 6); q += 0.35; }
-        if (room > q + 0.3 && R.chance(0.5)) { place("can", clutter(nextTo(q), 0.3), f.n, 1, R.next() * 6); q += 0.35; }
-        for (let k = 0; k < R.int(3) && room > q + 0.3; k++) { place("trashbag", clutter(nextTo(q), 0.3 + R.range(0, 0.15)), f.n, R.range(0.8, 1.0), R.next() * 6); q += 0.3; }
-        if (room > q + 0.3 && R.chance(0.35)) { place("mopbucket", clutter(nextTo(q), 0.22), f.n, 1, (R.next() - 0.5) * 0.4); q += 0.35; }
+        if (room > q + 0.3 && G.chance(0.65)) { prop((b, pm, a, fc, r) => beerCases(b, pm, a, fc, r, 2 + G.int(4)), "beercases", 6, clutter(nextTo(q), 0.3), f.n, G); q += 0.5; }
+        if (room > q + 0.3 && G.chance(0.35)) { place("propane", clutter(nextTo(q), 0.25), f.n, 1, G.next() * 6); q += 0.35; }
+        if (room > q + 0.3 && G.chance(0.5)) { place("can", clutter(nextTo(q), 0.3), f.n, 1, G.next() * 6); q += 0.35; }
+        for (let k = 0; k < G.int(3) && room > q + 0.3; k++) { place("trashbag", clutter(nextTo(q), 0.3 + G.range(0, 0.15)), f.n, G.range(0.8, 1.0), G.next() * 6); q += 0.3; }
+        if (room > q + 0.3 && G.chance(0.35)) { place("mopbucket", clutter(nextTo(q), 0.22), f.n, 1, (G.next() - 0.5) * 0.4); q += 0.35; }
         // the kitchen's exhaust: a galvanised duct out of the wall over the door, up to the eave, a cowl at its top
-        if (R.chance(0.4)) {
+        if (G.chance(0.4)) {
           const xs = left ? ds1 + 0.3 : ds0 - 0.3, dy0 = y0 + dh + 0.35, dy1 = Math.max(dy0 + 1, gTop + 1.2);
           if (xs > s0 + 0.2 && xs < s1 - 0.2) {
             B.box(M.galv, f, xs - 0.13, xs + 0.13, Y(dy0), Y(dy1), 0.02, 0.28, { skip: "b" });

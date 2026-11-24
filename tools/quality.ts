@@ -28,6 +28,9 @@ import { repoRoot } from "./lib/paths.ts";
 type V3 = [number, number, number];
 /** Named poses: where from, what at (the README's views and the places streaming is judged at). */
 const POSES: Record<string, { pos: V3; target: V3 }> = {
+  // the user's review view (2026-11-24): Golden Gai by day from the alley's mouth, かげろう's noren and Sundown's sign
+  // on the left, Paper Crane's sign and the posters on the right; every step 6 before / after includes it
+  goldengai: { pos: [371.5, 32.3, -491.8], target: [398.6, 32.8, -480.5] },
   alley: { pos: [361.6, 32.3, -495.8], target: [398.6, 32.8, -480.5] },
   street: { pos: [410, 33.45, -445], target: [420, 39.45, -560] },
   block: { pos: [330, 60, -420], target: [430, 50, -480] },
