@@ -194,7 +194,7 @@ export function dressDistrict(data: HeroData, M: Mats, night: boolean, seed = 11
 
   /** Exposed edges: walls that face an open alley (the space 1.2 m in front of them is no building's), or that rise
    *  well above the building in front of them: dressed from `from` (a height; -Infinity: from the ground) up. */
-  type Edge = { b: Bldg; f: Frame; L: number; y0: number; top: number; exposed: boolean; floors: number[]; small: boolean; from: number; seams?: number[] };
+  type Edge = { b: Bldg; f: Frame; L: number; y0: number; top: number; exposed: boolean; floors: number[]; small: boolean; from: number; seams?: number[]; blades?: [number, number, number][] };
   const edges: Edge[] = [];
 
   /** One window design per building (Tokyo about 1980: aluminium sashes in silver, bronze, white or black; tall, wide,
@@ -483,6 +483,42 @@ export function dressDistrict(data: HeroData, M: Mats, night: boolean, seed = 11
       B.end();
       count("vents");
     }
+    // the massing (the user's review, a daytime photo of the lanes as reference): what stands out of the walls above
+    // the ground floor and makes the lane's outline. Projecting box signs at every storey, stacked up to the roof, both
+    // faces a bar's name (the bars upstairs: other shops' signs, `shopCells` of a hashed index, the stream untouched);
+    // air conditioners high on the walls on brackets, their pipes down the wall; cable bundles along the wall
+    const units = (e.seams?.length ?? 0) + 1, uw = L / units;
+    for (let k = 0; k < units; k++) {
+      const n = r.chance(0.5) ? 2 : r.chance(0.6) ? 1 : 3;
+      for (let q = 0; q < n; q++) {
+        const bs = k * uw + (r.chance(0.5) ? 0.15 : uw - 0.15), bw = r.range(0.65, 1.2), bh = r.range(0.42, 0.75);
+        const by0 = gTop + 0.25 + q * r.range(0.9, 1.3) + r.range(0, 0.3);
+        if (by0 + bh > top - 0.3 || bs < 0.1 || bs > L - 0.1) break;
+        if (near(bs - 0.05, bs + 0.05, by0 - 0.05, by0 + bh + 0.05)) continue;
+        // (clear of the unit's own blade sign: the shops' names stay readable)
+        if ((e.blades ?? []).some(([s, b0, b1]) => Math.abs(s - bs) < 0.5 && by0 < b1 + 0.15 && by0 + bh > b0 - 0.15)) continue;
+        const shop = shopCells(Math.floor(r.next() * 4096)), bf = new Frame(f.p(bs, 0, 0), mul(f.n, -1), f.u);
+        B.box(M.steelDark, bf, -0.14, 0, Yf(by0 + 0.08), Yf(by0 + 0.11), -0.015, 0.015);
+        B.box(M.steelDark, bf, -0.14, 0, Yf(by0 + bh - 0.11), Yf(by0 + bh - 0.08), -0.015, 0.015);
+        B.box(M.signFrame, bf, -0.12 - bw, -0.12, Yf(by0), Yf(by0 + bh), -0.08, 0.08, { front: M.shop(shop.page).box, frontUV: shop.lightbox, back: M.shop(shop.page).box, backUV: shop.lightbox });
+        count("box signs");
+      }
+    }
+    for (let a = 0; a < 1 + r.int(3); a++) {
+      const as = r.range(0.5, L - 0.5), ay = r.range(gTop + 0.4, Math.max(gTop + 0.5, top - 1.2));
+      if (near(as - 0.45, as + 0.45, ay - 0.1, ay + 0.65)) continue;
+      place("aircon", f.p(as, Yf(ay) + 0.32, 0.35), f.n, 0.82);
+      for (const sx of [as - 0.33, as + 0.33]) B.box(M.steelDark, f, sx - 0.015, sx + 0.015, Yf(ay) - 0.02, Yf(ay) + 0.02, 0, 0.55);
+      B.tube(M.pvc, [f.p(as - 0.3, Yf(ay) + 0.25, 0.06), f.p(as - 0.3, Yf(ay) - 0.3, 0.06), f.p(as - 0.6, Yf(ay) - 0.6, 0.06), f.p(as - 0.6, Yf(ground + 0.3), 0.06)], 0.022, 6);
+      count("high aircons");
+    }
+    for (let c = 0; c < 1 + r.int(2); c++) {
+      const cy = gTop + r.range(0.3, 1.2), cd = r.range(0.04, 0.12), rr = r.range(0.012, 0.025), pts: V3[] = [];
+      const steps = Math.max(2, Math.round(L / 2.5));
+      for (let k = 0; k <= steps * 2; k++) pts.push(f.p((k / (steps * 2)) * L, Yf(cy) - (k % 2 ? r.range(0.04, 0.12) : 0), cd));
+      B.tube(c % 3 ? M.cable : M.cableGrey, pts, rr, 4);
+    }
+    count("cable bundles");
     // the upper windows: a trim surround on some buildings, a small hood over some, a bathroom vent beside a few
     const trim = r.chance(0.5), hooded = r.chance(0.4);
     for (const o of windows) {
@@ -753,6 +789,7 @@ export function dressDistrict(data: HeroData, M: Mats, night: boolean, seed = 11
         B.box(M.steelDark, bf, -0.18, 0, Y(by0 + 0.1), Y(by0 + 0.14), -0.02, 0.02);
         B.box(M.steelDark, bf, -0.18, 0, Y(by0 + bh - 0.14), Y(by0 + bh - 0.1), -0.02, 0.02);
         B.box(M.signFrame, bf, -0.16 - bh * 0.27, -0.16, Y(by0), Y(by0 + bh), -0.06, 0.06, { front: SM.blade, frontUV: shop.blade, back: SM.blade, backUV: shop.blade });
+        (e.blades ??= []).push([bs, by0, by0 + bh]);
         void c;
         count("blades");
       }
