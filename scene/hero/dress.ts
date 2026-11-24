@@ -261,6 +261,7 @@ export function dressDistrict(data: HeroData, M: Mats, night: boolean, seed = 11
       if (exposed && hero && small) dressSmall(e, openings, wallMat);
       else if (exposed && L >= 2 && !ab.noMid) dressMid(e, openings, st, i === st.balconyEdge, i === st.longest);
       wall(e, openings, wallMat);
+      if (exposed && L >= 2 && !ab.noMid && !(hero && small) && !st.highrise) secondary(e, st, openings, i === st.longest);
     }
     // the roof: a slab inside the parapet, the coping on the walls round it, and what stands up there
     const ring = b.pts;
@@ -345,6 +346,73 @@ export function dressDistrict(data: HeroData, M: Mats, night: boolean, seed = 11
 
   /** A window: aluminium frame, sliding sashes, the glass, the room behind it; the opening into `openings`. One kit
    *  element (its frame, glass, sill and hood; the room behind is the cell's: its picture and light vary). */
+  /**
+   * What keeps a building's wall from reading as a box (roadmap 6b), at street level: its downpipes from the roof's edge
+   * to the ground, with brackets; the expansion joints of a long wall; kitchen and bathroom vent hoods beside the windows
+   * of flats and houses; the electric meter and its conduit at the ground floor (most street fronts); concrete hoods (庇)
+   * over some windows. Its own random stream (the wall's): the rest of the dressing draws what it drew before.
+   */
+  function secondary(e: Edge, st: Style, openings: Opening[], front: boolean) {
+    if (ab.full === false) return;
+    const { f, L, floors, top } = e, base = f.o[1];
+    const r = rng(hashSeed(e.b.id, 61, Math.round(L * 10)));
+    const Yf = (y: number) => y - base;
+    const free = (s0: number, s1: number, y0: number, y1: number, own?: Opening) => !openings.some((o) => o !== own && s1 > o.s0 - 0.08 && s0 < o.s1 + 0.08 && y1 > o.y0 - 0.05 && y0 < o.y1 + 0.05);
+    const ground = floors[0], gTop = floors[1] ?? top, roof = top - 0.15;
+    // downpipes: at one end (two on a long wall), the roof's edge to the ground, a bracket every 1.8 m, a swan neck at the top
+    const ends = L > 9 && r.chance(0.6) ? [0.18, L - 0.18] : [r.chance(0.5) ? 0.18 : L - 0.18];
+    for (const ps of ends) {
+      if (!free(ps - 0.06, ps + 0.06, gTop, roof)) continue;
+      // (down to the ground where the ground floor is wall; over a shop front it turns into the wall above it)
+      const foot = free(ps - 0.06, ps + 0.06, ground, gTop) ? ground + 0.12 : gTop + 0.15;
+      B.tube(M.pvc, [f.p(ps, Yf(roof), 0.11), f.p(ps, Yf(foot), 0.11)], 0.05, 8);
+      if (foot > ground + 1) B.tube(M.pvc, [f.p(ps, Yf(foot), 0.11), f.p(ps, Yf(foot), 0)], 0.05, 8);
+      B.tube(M.pvc, [f.p(ps, Yf(roof), 0.11), f.p(ps, Yf(roof) + 0.25, 0.32)], 0.05, 8);
+      for (let y = ground + 1.2; y < roof - 0.3; y += 1.8) B.box(M.steelDark, f, ps - 0.07, ps + 0.07, Yf(y), Yf(y) + 0.03, 0, 0.12);
+      count("downpipes");
+    }
+    // expansion joints: a long wall every 6-9 m, a sealant line top to bottom
+    if (L > 12) for (let s = r.range(6, 9); s < L - 3; s += r.range(6, 9)) {
+      if (!free(s - 0.02, s + 0.02, gTop, top)) continue;
+      B.box(M.cable, f, s - 0.012, s + 0.012, Yf(gTop), Yf(top - 0.1), 0, 0.006, { skip: "b" });
+      count("joints");
+    }
+    // vent hoods: beside some windows of flats and houses (a kitchen, a bathroom), a round cowl out of the wall
+    if (st.kind === "apartment" || st.kind === "house" || (st.kind === "commercial" && r.chance(0.4))) {
+      for (const o of openings) {
+        if (o.y0 < gTop || !r.chance(0.15)) continue;
+        const side = r.chance(0.5) ? -1 : 1, vs = side < 0 ? o.s0 - 0.3 : o.s1 + 0.3, vy = o.y1 - 0.15;
+        if (vs < 0.2 || vs > L - 0.2 || !free(vs - 0.12, vs + 0.12, vy - 0.12, vy + 0.12)) continue;
+        B.begin(f, vs, Yf(vy));
+        B.tube(M.steelDark, [f.p(vs, Yf(vy), 0), f.p(vs, Yf(vy), 0.12)], 0.075, 10);
+        B.box(M.steelDark, f, vs - 0.1, vs + 0.1, Yf(vy) - 0.1, Yf(vy) + 0.1, 0.12, 0.13);
+        B.end();
+        count("vents");
+      }
+    }
+    // the meter and its conduit up to the first floor, on the street front's ground floor
+    if (r.chance(front ? 0.7 : 0.3)) {
+      for (let t = 0; t < 8; t++) {
+        const ms = r.range(0.3, L - 0.3), my = ground + 1.6;
+        if (!free(ms - 0.2, ms + 0.2, my - 0.3, my + 0.3)) continue;
+        B.begin(f, ms, Yf(my));
+        B.box(M.paintMetal, f, ms - 0.17, ms + 0.17, Yf(my) - 0.24, Yf(my) + 0.24, 0, 0.12);
+        B.box(M.glass, f, ms - 0.09, ms + 0.09, Yf(my) - 0.05, Yf(my) + 0.12, 0.12, 0.125);
+        B.end();
+        if (free(ms - 0.05, ms + 0.05, my + 0.3, gTop)) B.tube(M.pvcDark, [f.p(ms, Yf(my) + 0.24, 0.04), f.p(ms, Yf(gTop) - 0.1, 0.04)], 0.018, 6);
+        count("meters");
+        break;
+      }
+    }
+    // concrete hoods over the windows of some walls
+    if (st.kind !== "office" && r.chance(0.25)) for (const o of openings) {
+      if (o.y0 < gTop || o.s1 - o.s0 > 3) continue;
+      if (!free(o.s0 - 0.12, o.s1 + 0.12, o.y1 + 0.02, o.y1 + 0.14, o)) continue;
+      B.box(M.coping, f, o.s0 - 0.12, o.s1 + 0.12, Yf(o.y1) + 0.03, Yf(o.y1) + 0.1, 0, 0.32, { skip: "b" });
+      count("hoods");
+    }
+  }
+
   /** The rain's streaks down the wall from a sill (frame height `y`, s0..s1 along): a decal 0.9 m long, not below 0.3 m
    *  over the wall's foot (where the splash is). */
   /** The rain's streaks down the wall from a sill (frame height `y`, s0..s1 along): runs of dirt a centimetre or two
