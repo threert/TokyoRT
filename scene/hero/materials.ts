@@ -7,7 +7,11 @@ import { finishMap } from "./finish.ts";
 const HERO = "assets/city/hero/tex";
 
 /** A generated finish as a SurfaceMaterial: `size` m per repeat; `tint` multiplies the colour map. */
-function finish(id: string, size: number, o: { tint?: [number, number, number]; rough?: number; metal?: boolean; wet?: number; grime?: number; puddles?: number; normal?: number; name?: string } = {}) {
+/** Weathering by cause on a wall (`SurfaceMaterial.weathering`): splash and rising damp at its foot, and the faces toward
+ *  the south (+z, where the sun stands over Tokyo) bleached. Not the tiled grime the walls had. */
+const WEATHER = { foot: { height: 1.0, amount: 0.7 }, fade: { toward: [-0.2, 0, 0.98] as [number, number, number], amount: 0.5 } };
+
+function finish(id: string, size: number, o: { tint?: [number, number, number]; rough?: number; metal?: boolean; wet?: number; grime?: number; puddles?: number; normal?: number; name?: string; weather?: boolean } = {}) {
   const map = finishMap(id, "color");
   map.repeat = [1 / size, 1 / size];
   return tiling(new SurfaceMaterial({
@@ -22,6 +26,7 @@ function finish(id: string, size: number, o: { tint?: [number, number, number]; 
     wet: o.wet ?? 0,
     ...(o.grime ? { grime: { amount: o.grime, scale: 1.6 } } : {}),
     ...(o.puddles ? { puddles: { scale: 2.2, amount: o.puddles } } : {}),
+    ...(o.weather ? { weathering: WEATHER } : {}),
   }));
 }
 /** A material whose textures repeat at their real size (UVs in metres): a kit element may take any copy's UVs. */
@@ -41,48 +46,49 @@ export type Mats = ReturnType<typeof heroMaterials>;
 
 export function heroMaterials(night: boolean) {
   // walls: Tokyo about 1980, kept up. Small buildings: painted mortar and stucco in pale colours, cream and brown
-  // tile, clean timber and sheet metal; weathering only as light streaks (grime low).
+  // tile, clean timber and sheet metal. Weathered by cause (`WEATHER`): damp at the foot, bleached toward the south;
+  // stucco's relief is a fine sand over soft trowel marks (tools/tokyo/surfaces.ts), not the blobs it read as before.
   const walls = [
-    finish("stucco-cream", 2.4, { normal: 0.45, grime: 0.15, wet: 0.25, tint: [1, 0.96, 0.88], name: "wall stucco cream" }),
-    finish("stucco-cream", 2.4, { normal: 0.45, grime: 0.15, wet: 0.25, tint: [1, 0.93, 0.76], name: "wall stucco yellow" }),
-    finish("stucco-grey", 2.4, { normal: 0.45, grime: 0.15, wet: 0.25, tint: [0.86, 0.95, 0.87], name: "wall stucco green" }),
-    finish("stucco-grey", 2.4, { normal: 0.45, grime: 0.15, wet: 0.25, tint: [0.86, 0.92, 1.0], name: "wall stucco blue" }),
-    finish("plaster-painted", 2.5, { normal: 0.6, grime: 0.15, wet: 0.25, tint: [1.0, 0.86, 0.76], name: "wall plaster salmon" }),
-    finish("plaster-warm", 3, { grime: 0.12, wet: 0.25, name: "wall plaster cream" }),
-    finish("plaster-white", 2.4, { grime: 0.15, wet: 0.25, tint: [0.95, 0.94, 0.92], name: "wall plaster white" }),
-    finish("tiles-long-white", 1.6, { grime: 0.12, wet: 0.3, name: "wall tiles cream" }),
-    finish("tiles-long-white", 1.6, { grime: 0.12, wet: 0.3, tint: [0.66, 0.5, 0.38], name: "wall tiles brown" }),
-    finish("tiles-cladding-terracotta", 2, { grime: 0.1, wet: 0.3, name: "wall tiles terracotta" }),
-    finish("brick", 2, { grime: 0.1, wet: 0.3, name: "wall tiles dark brown" }),
-    finish("sheet-corrugated", 1.6, { tint: [1.3, 1.25, 1.1], grime: 0.1, wet: 0.3, name: "wall sheet cream" }),
-    finish("sheet-corrugated", 1.6, { tint: [0.85, 1.15, 1.0], grime: 0.1, wet: 0.3, name: "wall sheet green" }),
-    finish("planks-cedar", 1.4, { grime: 0.1, wet: 0.2, name: "wall cedar" }),
-    finish("planks-black", 1.3, { grime: 0.05, wet: 0.2, name: "wall black planks" }),
+    finish("stucco-cream", 2.4, { weather: true, normal: 0.35, wet: 0.25, tint: [1, 0.96, 0.88], name: "wall stucco cream" }),
+    finish("stucco-cream", 2.4, { weather: true, normal: 0.35, wet: 0.25, tint: [1, 0.93, 0.76], name: "wall stucco yellow" }),
+    finish("stucco-grey", 2.4, { weather: true, normal: 0.35, wet: 0.25, tint: [0.86, 0.95, 0.87], name: "wall stucco green" }),
+    finish("stucco-grey", 2.4, { weather: true, normal: 0.35, wet: 0.25, tint: [0.86, 0.92, 1.0], name: "wall stucco blue" }),
+    finish("plaster-painted", 2.5, { weather: true, normal: 0.4, wet: 0.25, tint: [1.0, 0.86, 0.76], name: "wall plaster salmon" }),
+    finish("plaster-warm", 3, { weather: true, normal: 0.4, wet: 0.25, name: "wall plaster cream" }),
+    finish("plaster-white", 2.4, { weather: true, normal: 0.4, wet: 0.25, tint: [0.95, 0.94, 0.92], name: "wall plaster white" }),
+    finish("tiles-long-white", 1.6, { weather: true, wet: 0.3, name: "wall tiles cream" }),
+    finish("tiles-long-white", 1.6, { weather: true, wet: 0.3, tint: [0.66, 0.5, 0.38], name: "wall tiles brown" }),
+    finish("tiles-cladding-terracotta", 2, { weather: true, wet: 0.3, name: "wall tiles terracotta" }),
+    finish("brick", 2, { weather: true, wet: 0.3, name: "wall tiles dark brown" }),
+    finish("sheet-corrugated", 1.6, { weather: true, tint: [1.3, 1.25, 1.1], wet: 0.3, name: "wall sheet cream" }),
+    finish("sheet-corrugated", 1.6, { weather: true, tint: [0.85, 1.15, 1.0], wet: 0.3, name: "wall sheet green" }),
+    finish("planks-cedar", 1.4, { weather: true, wet: 0.2, name: "wall cedar" }),
+    finish("planks-black", 1.3, { weather: true, wet: 0.2, name: "wall black planks" }),
   ];
   // how often each is drawn (same order)
   const wallWeights = [5, 3, 2, 2, 2, 3, 3, 3, 3, 2, 2, 1, 1, 2, 1];
   // the bigger buildings: tile-clad (cream, brown, terracotta, grey), stucco and painted concrete
   const bigWalls = [
-    finish("tiles-long-white", 1.8, { grime: 0.15, name: "big tiles cream" }),
-    finish("tiles-long-white", 1.8, { grime: 0.15, tint: [0.62, 0.47, 0.36], name: "big tiles brown" }),
-    finish("tiles-long-white", 1.8, { grime: 0.15, tint: [0.88, 0.8, 0.66], name: "big tiles beige" }),
-    finish("tiles-cladding-terracotta", 2.2, { grime: 0.12, name: "big tiles terracotta" }),
-    finish("brick", 2.2, { grime: 0.12, name: "big tiles dark brown" }),
-    finish("tiles-cladding", 2.5, { grime: 0.15, tint: [1.05, 1.0, 0.92], name: "big tiles grey beige" }),
-    finish("tiles-facade", 3, { grime: 0.15, tint: [1.15, 1.1, 1.0], name: "big tiles warm grey" }),
-    finish("stucco-grey", 3, { normal: 0.45, grime: 0.2, tint: [0.92, 0.92, 0.9], name: "big stucco grey" }),
-    finish("stucco-cream", 3, { normal: 0.45, grime: 0.2, tint: [1, 0.95, 0.85], name: "big stucco cream" }),
-    finish("concrete-painted", 3, { grime: 0.2, tint: [1.15, 1.12, 1.08], name: "big painted concrete" }),
+    finish("tiles-long-white", 1.8, { weather: true, name: "big tiles cream" }),
+    finish("tiles-long-white", 1.8, { weather: true, tint: [0.62, 0.47, 0.36], name: "big tiles brown" }),
+    finish("tiles-long-white", 1.8, { weather: true, tint: [0.88, 0.8, 0.66], name: "big tiles beige" }),
+    finish("tiles-cladding-terracotta", 2.2, { weather: true, name: "big tiles terracotta" }),
+    finish("brick", 2.2, { weather: true, name: "big tiles dark brown" }),
+    finish("tiles-cladding", 2.5, { weather: true, tint: [1.05, 1.0, 0.92], name: "big tiles grey beige" }),
+    finish("tiles-facade", 3, { weather: true, tint: [1.15, 1.1, 1.0], name: "big tiles warm grey" }),
+    finish("stucco-grey", 3, { weather: true, normal: 0.35, tint: [0.92, 0.92, 0.9], name: "big stucco grey" }),
+    finish("stucco-cream", 3, { weather: true, normal: 0.35, tint: [1, 0.95, 0.85], name: "big stucco cream" }),
+    finish("concrete-painted", 3, { weather: true, tint: [1.15, 1.12, 1.08], name: "big painted concrete" }),
   ];
   /** Trim: the bands, piers and crowns that break a facade up (a second finish against the wall's). */
   const trims = [
-    finish("stucco-cream", 2, { normal: 0.45, grime: 0.15, tint: [0.97, 0.96, 0.93], name: "trim white" }),
-    finish("tiles-long-white", 1.2, { grime: 0.1, tint: [0.5, 0.38, 0.3], name: "trim brown tile" }),
-    finish("concrete-painted", 2, { grime: 0.15, tint: [0.85, 0.85, 0.85], name: "trim concrete" }),
-    finish("tiles-cladding-terracotta", 1.6, { grime: 0.1, tint: [0.8, 0.7, 0.62], name: "trim terracotta" }),
+    finish("stucco-cream", 2, { weather: true, normal: 0.35, tint: [0.97, 0.96, 0.93], name: "trim white" }),
+    finish("tiles-long-white", 1.2, { weather: true, tint: [0.5, 0.38, 0.3], name: "trim brown tile" }),
+    finish("concrete-painted", 2, { weather: true, tint: [0.85, 0.85, 0.85], name: "trim concrete" }),
+    finish("tiles-cladding-terracotta", 1.6, { weather: true, tint: [0.8, 0.7, 0.62], name: "trim terracotta" }),
   ];
-  const plinth = finish("concrete-painted", 2, { tint: [0.8, 0.8, 0.8], grime: 0.4, wet: 0.5, name: "plinth" });
-  const coping = finish("stucco-grey", 2, { normal: 0.45, tint: [0.85, 0.85, 0.84], grime: 0.25, wet: 0.6, name: "coping" });
+  const plinth = finish("concrete-painted", 2, { weather: true, tint: [0.8, 0.8, 0.8], wet: 0.5, name: "plinth" });
+  const coping = finish("stucco-grey", 2, { normal: 0.35, tint: [0.85, 0.85, 0.84], grime: 0.25, wet: 0.6, name: "coping" });
   const roof = finish("concrete-weathered", 4, { tint: [0.78, 0.78, 0.78], grime: 0.3, wet: 0.3, name: "roof slab" });
   // the roofs' finishes: concrete, green and grey waterproof coats; painted sheet metal on small houses
   const roofs = [

@@ -121,9 +121,12 @@ async function make([id, family, rgb, roughness, across = 8, down = 16]: Recipe,
         h += wear * .9;
         gloss += wear * 50;
       } else {
-        const sand = field(u, v, 192, seed + 4);
+        // (plaster: a fine sand, ~5 mm on a 2.4 m repeat, over soft trowel marks; at 192 cells its sand clumped into
+        // centimetre blobs that read as oatmeal in raking sun)
+        const sand = field(u, v, family === "plaster" ? 512 : 192, seed + 4);
         const pits = clamp((.18 - sand) * 5);
-        h += (sand - .5) * (family === "plaster" ? 1.3 : .7) - pits * .75;
+        const trowel = family === "plaster" ? (field(u, v, 24, seed + 7) - .5) * .5 : 0;
+        h += (sand - .5) * (family === "plaster" ? .9 : .7) - pits * (family === "plaster" ? .45 : .75) + trowel;
         tone += (sand - .5) * .072 - pits * .14;
         if (id === "concrete-brushed") h += .15 * Math.sin(TAU * (v * 190 + mid));
       }
