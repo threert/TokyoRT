@@ -211,7 +211,10 @@ function step(job: Job, budget: { tris: number; until: number; objects: number }
     g.normals = nor;
     g.uvs = uv;
     g.index = idx;
-    job.root.add(new Mesh(g, job.level === 1 ? midOf.get(mat) ?? mat : lit(mat)));
+    const mesh = new Mesh(g, job.level === 1 ? midOf.get(mat) ?? mat : lit(mat));
+    // (a streak is a decal 4 mm off its wall: no shadow of its own on it)
+    if (mat.name.startsWith("streak")) mesh.castShadow = false;
+    job.root.add(mesh);
     budget.tris -= m.i / 3;
   }
   let n = 0;
@@ -258,6 +261,7 @@ function addKit(job: Job, e: Job["kit"][number]) {
     for (const part of piece) {
       const inst = new InstancedMesh(part.geometry, job.level === 1 ? midOf.get(part.material) ?? part.material : lit(part.material), e.n);
       inst.instanceMatrix.array.set(m);
+      if (part.material.name.startsWith("streak")) inst.castShadow = false;
       job.root.add(inst);
     }
     return piece.length;

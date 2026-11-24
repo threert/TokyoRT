@@ -46,6 +46,10 @@ const outDir = join(repoRoot, "assets/city", arg("out", "baked"), area);
 // ---------------------------------------------------------------- the area's buildings, props and wires
 type B = HeroData["buildings"][number] & { cx: number; cz: number };
 const buildings: B[] = [], props: HeroData["props"] = [], wires: number[][] = [];
+/** The tiles' road and sidewalk areas (the ground dressing's: scene/hero/ground.ts), each with its bounds. */
+type A = HeroData["areas"][number] & { bb: [number, number, number, number] };
+const roadAreas: A[] = [];
+const GROUND_KINDS = new Set([0, 1, 2]); // AREA.ROAD, CARRIAGEWAY, SIDEWALK
 let id = 0;
 const r2 = (v: number) => Math.round(v * 100) / 100;
 for (const f of readdirSync(tilesDir).filter((f) => /^t_.*\.bin$/.test(f)).sort()) {
@@ -61,6 +65,17 @@ for (const f of readdirSync(tilesDir).filter((f) => /^t_.*\.bin$/.test(f)).sort(
     }
   }
   for (const p of tile.props) props.push({ kind: p.kind, variant: p.variant, rot: p.rot, x: p.x, z: p.z, scale: p.scale });
+  for (const a of tile.areas) {
+    if (!GROUND_KINDS.has(a.kind)) continue;
+    for (const poly of a.polygons) {
+      if (!poly[0]) continue;
+      const rings = poly.map((r: Float32Array) => Array.from(r, r2));
+      const o = rings[0];
+      let bx0 = Infinity, bz0 = Infinity, bx1 = -Infinity, bz1 = -Infinity;
+      for (let i = 0; i < o.length; i += 2) { bx0 = Math.min(bx0, o[i]); bx1 = Math.max(bx1, o[i]); bz0 = Math.min(bz0, o[i + 1]); bz1 = Math.max(bz1, o[i + 1]); }
+      roadAreas.push({ kind: a.kind, code: a.code, rings, bb: [bx0, bz0, bx1, bz1] });
+    }
+  }
   for (let i = 0; i < tile.wires.length; i += 4) wires.push(Array.from(tile.wires.subarray(i, i + 4)));
 }
 // a coarse index for the neighbours of a cell
@@ -85,7 +100,7 @@ function cellData(i: number, j: number): HeroData {
   return {
     box: [x0, z0, x1, z1], hero: [x0, z0, x1, z1],
     buildings: bs,
-    areas: [],
+    areas: roadAreas.filter((a) => a.bb[0] < x1 + 10 && a.bb[2] > x0 - 10 && a.bb[1] < z1 + 10 && a.bb[3] > z0 - 10).map(({ kind, code, rings }) => ({ kind, code, rings })),
     props: props.filter((p) => inside(p.x, p.z, 20)),
     wires: wires.filter((w) => inside(w[0], w[1], 20) || inside(w[2], w[3], 20)),
     terrain: { x0: tx0, z0: tz0, step: 1, w, h, y },

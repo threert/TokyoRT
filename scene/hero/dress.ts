@@ -10,6 +10,7 @@ import { Batches, Frame, add, mul, norm, rng, type KitPiece, type V3 } from "./b
 import type { StreetModel } from "./street.ts";
 import type { Mats } from "./materials.ts";
 import { shopCells } from "./shops.ts";
+import { dressGround } from "./ground.ts";
 import { aBoard, beerCases, bicycle, propMaterials, scooter, umbrellaStand, vendingMachine } from "./props.ts";
 
 export interface HeroData {
@@ -344,6 +345,26 @@ export function dressDistrict(data: HeroData, M: Mats, night: boolean, seed = 11
 
   /** A window: aluminium frame, sliding sashes, the glass, the room behind it; the opening into `openings`. One kit
    *  element (its frame, glass, sill and hood; the room behind is the cell's: its picture and light vary). */
+  /** The rain's streaks down the wall from a sill (frame height `y`, s0..s1 along): a decal 0.9 m long, not below 0.3 m
+   *  over the wall's foot (where the splash is). */
+  /** The rain's streaks down the wall from a sill (frame height `y`, s0..s1 along): runs of dirt a centimetre or two
+   *  wide, of their own lengths up to `len`, thinning to a point; not below 0.3 m over the wall's foot (the splash's).
+   *  Plain geometry 3 mm off the wall (an alpha-tested decal cost ~1 ms of GPU a frame in its any-hit tests), ~10
+   *  triangles a window, its pattern its own (`seed`). */
+  function streakUnder(f: Frame, s0: number, s1: number, y: number, seed: number, m = M.streak, len = 0.9, runs = 6) {
+    // (street level only: from the mid level's distance a streak is under a pixel)
+    if (ab.full === false) return;
+    const r = rng(hashSeed(seed, Math.round(len * 10)));
+    const w = s1 - s0 + 0.04, a0 = s0 - 0.02, d = 0.003;
+    for (let k = 0; k < runs; k++) {
+      const on = r.next() < 0.55, c = a0 + ((k + 0.25 + 0.5 * r.next()) / runs) * w, half = 0.004 + 0.006 * r.next();
+      const l = Math.min(y - 0.3, (0.2 + 0.8 * r.next()) * len);
+      if (!on || l < 0.1) continue;
+      const y1 = y - l * 0.7, y2 = y - l;
+      B.quad(m, f.p(c - half, y1, d), f.p(c + half, y1, d), f.p(c + half, y, d), f.p(c - half, y, d), f.n, [[0, 0.7], [1, 0.7], [1, 0], [0, 0]]);
+      B.tri(m, f.p(c - half, y1, d), f.p(c, y2, d), f.p(c + half, y1, d), f.n, [[0, 0.7], [0.5, 1], [1, 0.7]]);
+    }
+  }
   function windowAt(e: Edge, openings: Opening[], s0: number, s1: number, y0: number, y1: number, o: Parameters<typeof drawWindow>[6]) {
     // Drawn at a standard size, the nearest of a few (12 % apart), and stretched to its own: one kit piece per size and
     // kind of window. The bars stretch with it (by 6 % at most: a couple of millimetres).
@@ -357,6 +378,9 @@ export function dressDistrict(data: HeroData, M: Mats, night: boolean, seed = 11
       B.begin(e.f, s0, y0 - e.f.o[1], scale);
     });
     B.end();
+    // (the streaks in the cell's own meshes, each window its own: in a kit piece they made the wall's piece an instance
+    // too, 14 % more of them, or the opening's pieces five times as many)
+    if (!o.shop) streakUnder(e.f, s0, s1, y0 - e.f.o[1] - 0.05, Math.round(e.b.id * 7 + s0 * 13 + y0 * 3));
   }
   function drawWindow(e: Edge, openings: Opening[] | null, s0: number, s1: number, y0: number, y1: number, o: { frosted?: boolean; lit?: number; grille?: boolean; inside?: number; frame?: typeof M.aluminium; depth?: number; bar?: boolean; shop?: boolean; hood?: boolean }, outside = () => {}) {
     const f = e.f, base = f.o[1], depth = snap(o.depth ?? W.depth, 0.02);
@@ -987,7 +1011,11 @@ export function dressDistrict(data: HeroData, M: Mats, night: boolean, seed = 11
         if (st.kind === "commercial" && R.chance(W.neon * 0.25) && fh - (wy1 - fy) > 0.5) neonShape(f, wc, Y(wy1) + Math.min(0.45, (fy + fh - wy1) / 2), 0.5, 0.06, R.pick(M.neon));
         // signs in the windows of the mixed-use floors (a bar, a karaoke room, a clinic)
         else if (st.kind === "commercial" && R.chance(0.3) && wy1 - wy0 > 0.8) lightboxAt(f, wc - ww / 2 + 0.05, wc + ww / 2 - 0.05, Y(wy1) + 0.05, Y(wy1) + Math.min(0.45, fy + fh - wy1 - 0.05), 0.08);
-        if (st.kind !== "office" && R.chance(0.15)) place(R.chance(0.5) ? "aircon" : "aircon", f.p(wc + ww / 2 + 0.6, Y(wy0) + 0.1, 0.25), f.n, 0.82);
+        if (st.kind !== "office" && R.chance(0.15)) {
+          place(R.chance(0.5) ? "aircon" : "aircon", f.p(wc + ww / 2 + 0.6, Y(wy0) + 0.1, 0.25), f.n, 0.82);
+          // (its condensate drips down the wall under it)
+          streakUnder(f, wc + ww / 2 + 0.45, wc + ww / 2 + 0.75, Y(wy0) + 0.05, e.b.id * 5 + k, M.drip, 1.4, 3);
+        }
       }
     }
     // articulation: floor bands, piers between the bays, a crown at the top (a second finish)
@@ -1191,6 +1219,14 @@ export function dressDistrict(data: HeroData, M: Mats, night: boolean, seed = 11
     place("manhole", [x, groundY(x, z) + 0.005, z], [0, 0, 1], 1, R.next() * 6);
     k++;
   }
+  }
+  // a baked cell's streets at street level: manholes, repairs and their seams, the kerbs' gutter lines (hero/ground.ts)
+  if (ab.cell && ab.full) {
+    R = rng(hashSeed(seed, -3, ...ab.cell));
+    const g = dressGround({ areas: data.areas, box: ab.cell, terrain, B, R, M: { patch: M.roadPatch, seam: M.roadSeam, gutterWet: M.gutterWet, gutterDust: M.gutterDust }, place });
+    counts.manholes = (counts.manholes ?? 0) + g.manholes;
+    counts["road repairs"] = (counts["road repairs"] ?? 0) + g.patches + g.trenches;
+    counts.kerbs = (counts.kerbs ?? 0) + g.kerbs;
   }
 
   // Trees share their seed, placement and silhouette across the three city levels.

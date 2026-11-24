@@ -44,6 +44,18 @@ function heroTex(file: string) {
 
 export type Mats = ReturnType<typeof heroMaterials>;
 
+/** A ground finish mapped in world space (`size` m a repeat): a decal on the road needs no UVs of its own and lines up
+ *  with nothing. Wet by night as the road is. */
+function groundFinish(id: string, size: number, tint: [number, number, number], name: string, rough = 1) {
+  const map = finishMap(id, "color");
+  map.repeat = [1 / size, 1 / size];
+  return new SurfaceMaterial({ name, map, normalMap: finishMap(id, "normal"), roughnessMap: finishMap(id, "rough"), worldScale: size, color: tint, roughness: rough, wet: 1 });
+}
+/** The streaks' dirt (hero/dress.ts `streakUnder`): grey-brown, matte; the AC drip's a little darker. */
+function streakMaterial(name: string, color: [number, number, number]) {
+  return new MeshStandardMaterial({ name, color, roughness: 0.95 });
+}
+
 export function heroMaterials(night: boolean) {
   // walls: Tokyo about 1980, kept up. Small buildings: painted mortar and stucco in pale colours, cream and brown
   // tile, clean timber and sheet metal. Weathered by cause (`WEATHER`): damp at the foot, bleached toward the south;
@@ -199,6 +211,11 @@ export function heroMaterials(night: boolean) {
   };
   return {
     shop, roofs, roofsSmall,
+    roadPatch: groundFinish("asphalt", 3.5, [0.24, 0.24, 0.25], "road repair", 0.9),
+    roadSeam: new MeshStandardMaterial({ name: "road seam", color: [0.02, 0.02, 0.022], roughness: 0.75 }),
+    gutterWet: groundFinish("asphalt", 3.5, [0.42, 0.41, 0.4], "kerb gutter line", 0.55),
+    gutterDust: groundFinish("concrete-worn", 2.5, [0.92, 0.87, 0.78], "kerb grit"),
+    streak: streakMaterial("streak sill", [0.2, 0.185, 0.165]), drip: streakMaterial("streak drip", [0.13, 0.12, 0.11]),
     walls, wallWeights, bigWalls, plinth, coping, roof, ground, groundB, gutter, grate, doorWood, shutter, shutterPainted, corrugatedEave, rustyMetal,
     aluminium, aluminiumDark, steelDark, paintMetal, pvc, pvcDark, cable, cableGrey, concretePole, insulator, transformer,
     glass, frosted, curtainGlass, spandrels, helipadPaint, helipadWhite, aviation, roomLit, roomDim, roomDark, rooms, neon, trims, frames, frameWhite, frameBlack, roomBar, roomShop, roomOffice, tank, laundry, notices, gasPipe, signBox, signBlade, lanternPaper, norenCloth, poster, signFrame, bulb, globe, vending, vendingBody,
