@@ -213,7 +213,9 @@ export function heroMaterials(night: boolean) {
   };
   return {
     shop, roofs, roofsSmall,
-    roadPatch: groundFinish("asphalt", 3.5, [0.24, 0.24, 0.25], "road repair", 0.9),
+    roadPatch: groundFinish("asphalt", 3.5, [0.15, 0.15, 0.16], "road repair", 0.9),
+    footGrime: groundFinish("asphalt", 3.5, [0.2, 0.18, 0.16], "wall foot grime", 0.6),
+    laneWorn: groundFinish("asphalt-fresh", 3, [1.0, 0.98, 0.95], "lane worn asphalt"),
     roadSeam: new MeshStandardMaterial({ name: "road seam", color: [0.02, 0.02, 0.022], roughness: 0.75 }),
     gutterWet: groundFinish("asphalt", 3.5, [0.42, 0.41, 0.4], "kerb gutter line", 0.55),
     gutterDust: groundFinish("concrete-worn", 2.5, [0.92, 0.87, 0.78], "kerb grit"),

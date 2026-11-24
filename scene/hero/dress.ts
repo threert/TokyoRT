@@ -179,6 +179,9 @@ export function dressDistrict(data: HeroData, M: Mats, night: boolean, seed = 11
     return c;
   };
   const onRoad = (x: number, z: number) => roadRings.some((rs) => inRing(x, z, rs[0]) && !rs.slice(1).some((h) => inRing(x, z, h)));
+  const walkRings = data.areas.filter((a) => a.kind === 2).map((a) => a.rings);
+  /** The ground's top here: a sidewalk's (20 cm up) where there is one, else just over the road. */
+  const surfaceY = (x: number, z: number) => terrain(x, z) + (walkRings.some((rs) => inRing(x, z, rs[0]) && !rs.slice(1).some((h) => inRing(x, z, h))) ? 0.2 : 0.075);
   const topAt = (x: number, z: number, skip?: Bldg) => {
     let t = -Infinity;
     for (const b of grid.get(key(Math.floor(x / CELL), Math.floor(z / CELL))) ?? []) {
@@ -379,6 +382,7 @@ export function dressDistrict(data: HeroData, M: Mats, night: boolean, seed = 11
     if (ab.full === false) return;
     const { f, L, floors, top } = e, base = f.o[1];
     const r = rng(hashSeed(e.b.id, 61, Math.round(L * 10)));
+    footBand(e, rng(hashSeed(e.b.id, 89, Math.round(L * 10))));
     const Yf = (y: number) => y - base;
     const free = (s0: number, s1: number, y0: number, y1: number, own?: Opening) => !openings.some((o) => o !== own && s1 > o.s0 - 0.08 && s0 < o.s1 + 0.08 && y1 > o.y0 - 0.05 && y0 < o.y1 + 0.05);
     const ground = floors[0], gTop = floors[1] ?? top, roof = top - 0.15;
@@ -436,6 +440,25 @@ export function dressDistrict(data: HeroData, M: Mats, night: boolean, seed = 11
     }
   }
 
+  /** The ground along a wall's foot (6f): the dark damp band where splash, run-off and the lane's dirt collect, 0.25-0.5 m
+   *  out and ragged, a few millimetres over the road (hidden under a raised sidewalk where there is one). */
+  function footBand(e: Edge, r: { range(a: number, b: number): number }) {
+    const { f, L } = e;
+    const n = Math.max(1, Math.round(L / 0.8));
+    for (let k = 0; k < n; k++) {
+      const a = (k / n) * L, b = ((k + 1) / n) * L, wa = r.range(0.25, 0.5), wb = r.range(0.25, 0.5);
+      const g = (s: number, d: number): V3 => { const p = f.p(s, 0, d); return [p[0], surfaceY(p[0], p[2]) + 0.006, p[2]]; };
+      B.quad(M.footGrime, g(a, 0.02), g(b, 0.02), g(b, wb), g(a, wa), [0, 1, 0], [[0, 0], [1, 0], [1, 1], [0, 1]]);
+    }
+    count("foot bands");
+  }
+  /** A dark drip stain on the ground under an air conditioner (frame `s` along the wall, `d` out). */
+  function dripStain(e: Edge, s: number, d: number, r: { range(a: number, b: number): number }) {
+    const c = e.f.p(s, 0, d), rad = r.range(0.25, 0.45), y = surfaceY(c[0], c[2]) + 0.007;
+    const pts: V3[] = Array.from({ length: 8 }, (_, k) => { const a = (k / 8) * Math.PI * 2, q = rad * r.range(0.7, 1.15); return [c[0] + Math.cos(a) * q, y, c[2] + Math.sin(a) * q]; });
+    B.polygon(M.footGrime, pts, [0, 1, 2, 0, 2, 3, 0, 3, 4, 0, 4, 5, 0, 5, 6, 0, 6, 7], [0, 1, 0]);
+  }
+
   /**
    * The same for Golden Gai's small buildings (roadmap 6b), where the user's review looked: what they did not have yet
    * (they have their drain, cables, gas pipe and meter, AC units, signs, awnings and door steps already). The sealant
@@ -447,6 +470,7 @@ export function dressDistrict(data: HeroData, M: Mats, night: boolean, seed = 11
     if (ab.full === false) return;
     const { f, L, floors, top } = e, base = f.o[1];
     const r = rng(hashSeed(e.b.id, 83, Math.round(L * 10)));
+    footBand(e, rng(hashSeed(e.b.id, 89, Math.round(L * 10))));
     const Yf = (y: number) => y - base;
     const ground = floors[0], gTop = floors[1] ?? top;
     const near = (s0: number, s1: number, y0: number, y1: number, own?: Opening) => openings.some((o) => o !== own && s1 > o.s0 - 0.06 && s0 < o.s1 + 0.06 && y1 > o.y0 - 0.04 && y0 < o.y1 + 0.04);
@@ -508,6 +532,7 @@ export function dressDistrict(data: HeroData, M: Mats, night: boolean, seed = 11
       const as = r.range(0.5, L - 0.5), ay = r.range(gTop + 0.4, Math.max(gTop + 0.5, top - 1.2));
       if (near(as - 0.45, as + 0.45, ay - 0.1, ay + 0.65)) continue;
       place("aircon", f.p(as, Yf(ay) + 0.32, 0.35), f.n, 0.82);
+      dripStain(e, as, 0.4, r);
       for (const sx of [as - 0.33, as + 0.33]) B.box(M.steelDark, f, sx - 0.015, sx + 0.015, Yf(ay) - 0.02, Yf(ay) + 0.02, 0, 0.55);
       B.tube(M.pvc, [f.p(as - 0.3, Yf(ay) + 0.25, 0.06), f.p(as - 0.3, Yf(ay) - 0.3, 0.06), f.p(as - 0.6, Yf(ay) - 0.6, 0.06), f.p(as - 0.6, Yf(ground + 0.3), 0.06)], 0.022, 6);
       count("high aircons");
@@ -1450,10 +1475,11 @@ export function dressDistrict(data: HeroData, M: Mats, night: boolean, seed = 11
   // a baked cell's streets at street level: manholes, repairs and their seams, the kerbs' gutter lines (hero/ground.ts)
   if (ab.cell && ab.full) {
     R = rng(hashSeed(seed, -3, ...ab.cell));
-    const g = dressGround({ areas: data.areas, box: ab.cell, terrain, B, R, M: { patch: M.roadPatch, seam: M.roadSeam, gutterWet: M.gutterWet, gutterDust: M.gutterDust }, place });
+    const g = dressGround({ areas: data.areas, box: ab.cell, terrain, B, R, M: { patch: M.roadPatch, seam: M.roadSeam, gutterWet: M.gutterWet, gutterDust: M.gutterDust, lane: M.laneWorn }, place });
     counts.manholes = (counts.manholes ?? 0) + g.manholes;
     counts["road repairs"] = (counts["road repairs"] ?? 0) + g.patches + g.trenches;
     counts.kerbs = (counts.kerbs ?? 0) + g.kerbs;
+    counts.lanes = (counts.lanes ?? 0) + g.lanes;
   }
 
   // Trees share their seed, placement and silhouette across the three city levels.

@@ -7,13 +7,14 @@
 // All of it lies a few millimetres over the far level's road surface (the source mesher lifts a carriageway 6 cm
 // over the terrain, a road 4 cm, a sidewalk 20 cm), as decals in the cell's meshes.
 import type { MeshStandardMaterial } from "@threert/scene";
+import earcut from "earcut";
 import type { Batches, V3 } from "./builder.ts";
 
 /** The compiled tiles' area kinds this reads (tools/city/shared/tileformat.js `AREA`). */
 const AREA_KIND = { ROAD: 0, CARRIAGEWAY: 1, SIDEWALK: 2 } as const;
 type Area = { kind: number; code: number; rings: number[][] };
 type Rng = { next(): number; range(a: number, b: number): number; chance(p: number): boolean };
-export type GroundMats = { patch: MeshStandardMaterial; seam: MeshStandardMaterial; gutterWet: MeshStandardMaterial; gutterDust: MeshStandardMaterial };
+export type GroundMats = { patch: MeshStandardMaterial; seam: MeshStandardMaterial; gutterWet: MeshStandardMaterial; gutterDust: MeshStandardMaterial; lane: MeshStandardMaterial };
 
 /** How far over the terrain each kind of area's surface lies (the source mesher's lifts). */
 const LIFT: Record<number, number> = { [AREA_KIND.ROAD]: 0.04, [AREA_KIND.CARRIAGEWAY]: 0.06, [AREA_KIND.SIDEWALK]: 0.2 };
@@ -56,7 +57,7 @@ export function dressGround(o: { areas: Area[]; box: [number, number, number, nu
     for (let t = 0.25; t <= 6; t += 0.25) { if (roadAt(x - dir[1] * t, z + dir[0] * t) && roadAt(x + dir[1] * t, z - dir[0] * t)) w = t; else break; }
     return w;
   };
-  const counts = { manholes: 0, patches: 0, trenches: 0, kerbs: 0 };
+  const counts: { manholes: number; patches: number; trenches: number; kerbs: number; lanes: number; stains?: number } = { manholes: 0, patches: 0, trenches: 0, kerbs: 0, lanes: 0 };
 
   /** A rectangle on the road (centre, along-direction, length, width), draped on the terrain in quads ~4 m along and
    *  ~2 m across (a road bends that little over them; 1 m quads were 5.7 M triangles more at street level). */
@@ -74,33 +75,67 @@ export function dressGround(o: { areas: Area[]; box: [number, number, number, nu
   };
   /** A repair: its fresher asphalt and the dark sealed seam round it. */
   const repair = (cx: number, cz: number, dir: [number, number], len: number, wid: number, lift: number) => {
-    drape(M.patch, cx, cz, dir, len, wid, lift + 0.004);
+    drape(M.patch, cx, cz, dir, len, wid, lift + 0.006);
     const [ux, uz] = dir, vx = -uz, vz = ux, s = 0.04;
     for (const side of [-1, 1]) {
-      drape(M.seam, cx + vx * side * wid / 2, cz + vz * side * wid / 2, dir, len + s, s, lift + 0.006);
-      drape(M.seam, cx + ux * side * len / 2, cz + uz * side * len / 2, dir, s, wid + s, lift + 0.006);
+      drape(M.seam, cx + vx * side * wid / 2, cz + vz * side * wid / 2, dir, len + s, s, lift + 0.008);
+      drape(M.seam, cx + ux * side * len / 2, cz + uz * side * len / 2, dir, s, wid + s, lift + 0.008);
     }
   };
   const inside = (x: number, z: number) => x >= x0 && x < x1 && z >= z0 && z < z1;
 
+  // the lanes (a road piece under ~6 m across): their own worn surface, lighter than a street's asphalt, as Golden Gai's
+  // lanes are (on the far level's near-black asphalt in the shade a stain or a patch could not show)
+  for (const a of roads) {
+    const ring = a.rings[0];
+    let cx = 0, cz = 0;
+    for (let k = 0; k < ring.length; k += 2) { cx += ring[k]; cz += ring[k + 1]; }
+    cx /= ring.length / 2; cz /= ring.length / 2;
+    if (!inside(cx, cz) || !inArea(cx, cz, a) || across(cx, cz, along(cx, cz)) > 3) continue;
+    const flat: number[] = [], holes: number[] = [];
+    for (const [k, r] of a.rings.entries()) { if (k) holes.push(flat.length / 2); flat.push(...r); }
+    const idx = earcut(flat, holes, 2), lift = (LIFT[a.kind] ?? 0.06) + 0.002;
+    const at = (v: number): V3 => [flat[v * 2], terrain(flat[v * 2], flat[v * 2 + 1]) + lift, flat[v * 2 + 1]];
+    for (let k = 0; k < idx.length; k += 3) B.tri(M.lane, at(idx[k]), at(idx[k + 2]), at(idx[k + 1]), [0, 1, 0]);
+    counts.lanes++;
+    // on it, what a lane collects: stains (oil, spilt drink, water that stood), dark on the worn grey; a manhole in
+    // its middle on some
+    let bx0 = Infinity, bz0 = Infinity, bx1 = -Infinity, bz1 = -Infinity;
+    for (let k = 0; k < ring.length; k += 2) { bx0 = Math.min(bx0, ring[k]); bx1 = Math.max(bx1, ring[k]); bz0 = Math.min(bz0, ring[k + 1]); bz1 = Math.max(bz1, ring[k + 1]); }
+    const n = Math.ceil(((bx1 - bx0) * (bz1 - bz0)) / 8);
+    for (let k = 0; k < n; k++) {
+      const x = R.range(bx0, bx1), z = R.range(bz0, bz1);
+      if (!inside(x, z) || !inArea(x, z, a)) continue;
+      const rad = R.range(0.2, 0.7), y = terrain(x, z) + lift + 0.003, sq = R.range(0.5, 1);
+      const pts: V3[] = Array.from({ length: 9 }, (_, q) => { const an = (q / 9) * Math.PI * 2, rr = rad * R.range(0.6, 1.2); return [x + Math.cos(an) * rr, y, z + Math.sin(an) * rr * sq]; });
+      B.polygon(M.patch, pts, Array.from({ length: 7 }, (_, q) => [0, q + 1, q + 2]).flat(), [0, 1, 0]);
+      counts.stains = (counts.stains ?? 0) + 1;
+    }
+    if (R.chance(0.5) && clear(cx, cz, 0.7)) {
+      o.place("manhole", [cx, terrain(cx, cz) + lift + 0.005, cz], [0, 0, 1], 1, R.next() * 6);
+      counts.manholes++;
+    }
+  }
   // manholes: a jittered 9 m grid over the cell, on a carriageway or road and clear of its edges; about one in five
   // (on a 10 m road, one every 40 m or so)
   for (let gx = x0 + 4.5; gx < x1; gx += 9) for (let gz = z0 + 4.5; gz < z1; gz += 9) {
     const x = gx + R.range(-3, 3), z = gz + R.range(-3, 3);
     if (!R.chance(0.22)) continue;
     const a = roadAt(x, z);
-    if (!a || !clear(x, z, 1.6)) continue;
+    // (a lane too: a smaller clearance, a manhole down its middle)
+    if (!a || !clear(x, z, 0.9)) continue;
     o.place("manhole", [x, terrain(x, z) + (LIFT[a.kind] ?? 0.06) + 0.004, z], [0, 0, 1], 1, R.next() * 6);
     counts.manholes++;
   }
   // repairs: a rectangle every ~500 m² of road, along the road's nearest edge; a trench strip along some edges
-  for (let gx = x0 + 11; gx < x1; gx += 22) for (let gz = z0 + 11; gz < z1; gz += 22) {
-    const x = gx + R.range(-9, 9), z = gz + R.range(-9, 9);
+  for (let gx = x0 + 6; gx < x1; gx += 12) for (let gz = z0 + 6; gz < z1; gz += 12) {
+    const x = gx + R.range(-5, 5), z = gz + R.range(-5, 5);
     const a = roadAt(x, z);
     if (!a) continue;
     const dir = along(x, z), half = across(x, z, dir);
-    const len = R.range(1.5, 6), wid = R.range(0.9, Math.min(3, Math.max(1, half * 1.2)));
-    if (half < wid / 2 + 0.3 || !clear(x, z, Math.min(len / 2, 2))) continue;
+    // (in a lane a small one: a dug-up pipe's patch)
+    const len = half < 1.5 ? R.range(0.6, 1.8) : R.range(1.5, 6), wid = half < 1.5 ? R.range(0.5, 1.0) : R.range(0.9, Math.min(3, Math.max(1, half * 1.2)));
+    if (half < wid / 2 + 0.15 || !clear(x, z, Math.min(len / 2, half < 1.5 ? 0.7 : 2))) continue;
     repair(x, z, dir, len, wid, LIFT[a.kind] ?? 0.06);
     counts.patches++;
   }
