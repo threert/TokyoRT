@@ -52,9 +52,90 @@ let lib = new Map<string, MeshStandardMaterial>();
 // itself: the only light it could take is the sky's through the pane, which a path finds by chance (a black window
 // that sparkles from frame to frame). Not a light either: nothing in it enters the light sampler.
 const midOf = new Map<MeshStandardMaterial, MeshStandardMaterial>();
+// A room by day is a box behind the glass (interior mapping): a ray from the eye through the window, in the window's own
+// frame (u across, up, into the wall), meets the room's back wall (the atlas's room or office picture), its side walls,
+// floor or ceiling, or a piece of furniture standing in it; lit from the window, darker deeper in. A window's cell of
+// the blinds atlas (hero-textures.ts blinds(): 0 shoji, 1 venetian blind, 2/4/5 curtains with a gap, 3 lace, 6 an
+// office, 7 a room's back wall) says what is at the glass: screens stay, curtains part on the room, lace shows it
+// faintly. Each window its own room (hashed on where it stands).
+const ROOM_HELPERS = `
+fn tk_rh(p: vec3<f32>) -> f32 { return fract(sin(dot(p, vec3<f32>(12.9898, 78.233, 37.719))) * 43758.5453); }
+fn tk_room(m: Material, i: MatIn, cell: f32, x: f32, y: f32, seed: f32, glow: u32) -> vec3<f32> {
+    let nf = i.ng;
+    let rd = -i.view;
+    let rx = dot(rd, i.t);
+    let ry = dot(rd, i.b);
+    let rz = max(dot(i.view, nf), 0.05);
+    // the room: 2 windows wide, its floor 0.7 window-heights under the sill, 2.2 deep (window heights)
+    let x0 = -0.5 - seed * 0.4;
+    let x1 = 1.5 + fract(seed * 7.3) * 0.4;
+    let y0 = -0.7;
+    let y1 = 1.35;
+    let D = 1.8 + fract(seed * 3.1) * 1.0;
+    let tx = select((x0 - x) / min(rx, -1e-4), (x1 - x) / max(rx, 1e-4), rx > 0.0);
+    let ty = select((y0 - y) / min(ry, -1e-4), (y1 - y) / max(ry, 1e-4), ry > 0.0);
+    let tz = D / rz;
+    var t = min(tz, min(tx, ty));
+    let hx = x + rx * t;
+    let hy = y + ry * t;
+    let hz = rz * t;
+    var col: vec3<f32>;
+    let office = cell > 5.5 && cell < 6.5;
+    let bar = cell > 7.5;
+    if (tz <= tx && tz <= ty) {
+        // the back wall: the room's (or office's, or bar's) picture across the room's width
+        let u = clamp((hx - x0) / (x1 - x0), 0.02, 0.98);
+        let v = clamp(1.0 - (hy - y0) / (y1 - y0), 0.02, 0.98);
+        if (bar) {
+            col = msample_color(m, i, glow, vec2<f32>((cell - 8.0 + u) / 4.0, v), 8.0).rgb;
+        } else {
+            let c = select(7.0, 6.0, office);
+            col = msample_color(m, i, glow, vec2<f32>((c + u) / 8.0, v), 8.0).rgb;
+        }
+    } else if (ty < tx) {
+        if (ry < 0.0) {
+            // the floor: boards (a home, a bar's darker), grey carpet tiles (an office)
+            let board = 0.85 + 0.15 * step(0.5, fract(hz * 2.6 + floor(hx * 4.0) * 0.37));
+            col = select(vec3<f32>(0.32, 0.22, 0.14) * board, vec3<f32>(0.3, 0.31, 0.32), office);
+            if (bar) { col = vec3<f32>(0.16, 0.11, 0.08) * board; }
+        } else {
+            // the ceiling: an office's light panels; a bar's dark boards and a warm lamp
+            let panel = office && fract(hz * 1.2) < 0.35 && fract(hx * 1.5) < 0.6;
+            col = select(vec3<f32>(0.8, 0.79, 0.75), vec3<f32>(3.0, 3.0, 2.9), panel);
+            if (bar) {
+                let lamp = length(vec2<f32>(fract(hx * 0.9) - 0.5, fract(hz * 0.8) - 0.5)) < 0.12;
+                col = select(vec3<f32>(0.2, 0.15, 0.11), vec3<f32>(4.0, 2.8, 1.6), lamp);
+            }
+        }
+    } else {
+        col = select(vec3<f32>(0.74, 0.69, 0.6), vec3<f32>(0.7, 0.72, 0.72), office) * (0.85 + 0.15 * fract(seed * 11.0));
+        if (bar) { col = vec3<f32>(0.42, 0.3, 0.2) * (0.8 + 0.3 * fract(seed * 11.0)); }
+    }
+    // furniture standing in the room: a low card (a sofa, a desk, a counter) and a tall one (a shelf, a wardrobe)
+    for (var k = 0; k < 2; k++) {
+        let kf = f32(k);
+        let zc = D * (0.35 + 0.3 * fract(seed * (5.7 + kf * 3.3)));
+        let tc = zc / rz;
+        if (tc < t) {
+            let cx = x + rx * tc;
+            let cy = y + ry * tc;
+            let a = x0 + (x1 - x0) * fract(seed * (2.3 + kf * 1.9)) * 0.7;
+            let w = 0.5 + 0.6 * fract(seed * (8.1 + kf));
+            let top = y0 + select(0.55, 1.45, k == 1) * (0.8 + 0.4 * fract(seed * (4.4 + kf)));
+            if (cx > a && cx < a + w && cy < top) {
+                t = tc;
+                col = select(vec3<f32>(0.16, 0.12, 0.1), vec3<f32>(0.28, 0.2, 0.14), k == 1) * (0.7 + 0.6 * fract(seed * (9.0 + kf)));
+            }
+        }
+    }
+    // lit from the window: brighter near it and on the floor by it, darker deeper in
+    let depth = rz * t;
+    return col * (0.35 + 0.65 * exp(-depth * 0.55));
+}`;
 const midGlow = new MaterialFunction("TokyoMidGlow", {
-  params: { IsNight: 0, DayNits: 0, NightNits: 0, Tint: [1, 1, 1, 0], Room: 0 },
+  params: { IsNight: 0, DayNits: 0, NightNits: 0, Tint: [1, 1, 1, 0], Room: 0, Bar: 0 },
   textures: ["Glow"],
+  helpers: ROOM_HELPERS,
   code: `
     let light = msample_color(m, i, $Glow, i.uv, exp2(i.uvd)).rgb * $Tint.rgb;
     if ($IsNight > 0.5) {
@@ -64,13 +145,34 @@ const midGlow = new MaterialFunction("TokyoMidGlow", {
       }
     } else if ($Room > 0.0) {
       o.base = vec3<f32>(0.0); o.specular = 0.0; o.metallic = 0.0;
-      o.emissive = light * $Room;
+      // (the window's cell of the atlas, and where in it: u across the cell, v down)
+      let cu = i.uv.x * 8.0;
+      let cell = floor(cu);
+      let x = clamp(fract(cu), 0.0, 1.0);
+      let y = clamp(1.0 - i.uv.y, 0.0, 1.0);
+      var pic = light;
+      if ($Bar > 0.5 && i.near) {
+        // a bar's or a shop's inside (interior.png: 4 cells, each a back wall of shelves and a counter)
+        let bu = i.uv.x * 4.0;
+        let seed = tk_rh(floor(i.op * 2.0) + vec3<f32>(floor(bu), 3.0, 0.0));
+        pic = tk_room(m, i, 8.0 + floor(bu), clamp(fract(bu), 0.0, 1.0), y, seed, $Glow) * $Tint.rgb;
+      } else if (cell > 1.5 && i.near) {
+        let seed = tk_rh(floor(i.op * 2.0) + vec3<f32>(cell, 0.0, 0.0));
+        let room = tk_room(m, i, cell, x, y, seed, $Glow) * $Tint.rgb;
+        let lum = dot(pic, vec3<f32>(0.2126, 0.7152, 0.0722)) / max(dot($Tint.rgb, vec3<f32>(0.333)), 0.05);
+        if (cell > 5.5) { pic = room; }
+        else if (cell > 2.5 && cell < 3.5) { pic = mix(room, pic, 0.45); }
+        else { pic = mix(pic, room, smoothstep(0.82, 0.92, lum)); }
+      }
+      o.emissive = pic * $Room;
     } else {
       o.emissive = light * $DayNits;
     }`,
 });
-/** A room's brightness by day (nits): homes and offices with the lights off, shops with theirs on. */
-const ROOM_DAY = { room: 1300, shop: 2500 };
+/** A room's brightness by day (nits): homes and offices with the lights off, bars and shops with theirs on. Dimmer than
+ *  the street, as a room is: the glass's reflection of the street and the sky leads, the room shows through it where it
+ *  is lit (at 1300 a window read as a flat, light picture, its reflection lost). */
+const ROOM_DAY = { room: 300, bar: 600, shop: 800 };
 // The far tile already has each window, sign and lamp in its night nodes. Keep that geometry resident.
 // Unlit glTF materials carry their authored glow as base colour. Restore their daylight surfaces when power is off.
 // By day a far window is the pane in front of a room, as the near levels' windows are: the room at the brightness it has
@@ -582,7 +684,7 @@ export function sceneFor(room: string) {
   const daylight = collectMaterials(heroMaterials(false), propMaterials(false), false);
   for (const m of [...lib.values()]) {
     // (rooms behind windows, lit by night or not: their daylight look)
-    const room = m.name.startsWith("room ") ? (m.name.includes("shop") ? ROOM_DAY.shop : ROOM_DAY.room) : 0;
+    const room = m.name.startsWith("room ") ? (m.name.includes("shop") ? ROOM_DAY.shop : m.name.includes("bar") ? ROOM_DAY.bar : ROOM_DAY.room) : 0;
     if (!emits(m) && !room) continue;
     const k = emits(m) ? m.emissiveIntensity : 0;
     const day = daylight.get(m.name)?.emissiveIntensity ?? 0;
@@ -591,7 +693,7 @@ export function sceneFor(room: string) {
     // make it black against a sunlit wall)
     const dim = m.name === "room dark" ? 0.65 : 1;
     const tint: [number, number, number, number] = room ? [dim, dim, dim, 0] : [m.emissive.r, m.emissive.g, m.emissive.b, 0];
-    const params = { DayNits: day, NightNits: k, Tint: tint, Room: room };
+    const params = { DayNits: day, NightNits: k, Tint: tint, Room: room, Bar: room && (m.name === "room bar" || m.name === "room shop") ? 1 : 0 };
     if (room) {
       const d = m.clone();
       d.name = `${m.name} ~day`;

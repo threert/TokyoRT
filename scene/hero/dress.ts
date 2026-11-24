@@ -607,7 +607,7 @@ export function dressDistrict(data: HeroData, M: Mats, night: boolean, seed = 11
     // too, 14 % more of them, or the opening's pieces five times as many)
     if (!o.shop) streakUnder(e.f, s0, s1, y0 - e.f.o[1] - 0.05, Math.round(e.b.id * 7 + s0 * 13 + y0 * 3));
   }
-  function drawWindow(e: Edge, openings: Opening[] | null, s0: number, s1: number, y0: number, y1: number, o: { frosted?: boolean; lit?: number; grille?: boolean; inside?: number; frame?: typeof M.aluminium; depth?: number; bar?: boolean; shop?: boolean; hood?: boolean }, outside = () => {}) {
+  function drawWindow(e: Edge, openings: Opening[] | null, s0: number, s1: number, y0: number, y1: number, o: { frosted?: boolean; frostDraw?: boolean; lit?: number; grille?: boolean; inside?: number; frame?: typeof M.aluminium; depth?: number; bar?: boolean; shop?: boolean; hood?: boolean }, outside = () => {}) {
     const f = e.f, base = f.o[1], depth = snap(o.depth ?? W.depth, 0.02);
     openings?.push({ s0, s1, y0, y1, depth });
     const Y0 = y0 - base, Y1 = y1 - base, fr = o.frame ?? W.frame, t = 0.035, d = -depth;
@@ -649,15 +649,15 @@ export function dressDistrict(data: HeroData, M: Mats, night: boolean, seed = 11
       }
     }
     // the room behind
+    // (a shop's and a bar's inside: a room in depth behind the glass, its back wall interior.png's shelves and counter;
+    // the depth is the scene's interior mapping, TokyoMidGlow, on a plane just behind the glass)
     if (o.shop) {
-      // a shop's inside: a lit back wall well behind the glass
       const ci = o.inside ?? R.int(4);
-      B.rect(o.lit ? M.roomShop : M.roomDark, f, s0 - 0.3, Y0 - 0.1, s1 + 0.3, Y1 + 0.3, d - 2.2, [ci / 4 + 0.01, 0, (ci + 1) / 4 - 0.01, 1]);
-      B.flat(M.coping, f, s0, s1, d - 2.2, d, Y0 - 0.02);
-    } else if (o.bar && o.frosted) {
-      // a bar behind frosted glass: its inside, further back
-      const ci = R.int(4);
-      B.rect(o.lit ? M.roomBar : M.roomDark, f, s0 - 0.2, Y0 - 0.2, s1 + 0.2, Y1 + 0.2, d - 0.7, [ci / 4 + 0.01, 0.2, (ci + 1) / 4 - 0.01, 0.8]);
+      B.rect(M.roomShop, f, s0, Y0, s1, Y1, d - 0.25, [ci / 4 + 0.01, 0, (ci + 1) / 4 - 0.01, 1]);
+    } else if (o.bar) {
+      // (frosted or clear, a bar: its cell from the stream as the frosted ones drew it, else from the one it drew)
+      const ci = (o.frostDraw ?? o.frosted) ? R.int(4) : cellIx % 4;
+      B.rect(M.roomBar, f, s0, Y0, s1, Y1, d - 0.25, [ci / 4 + 0.01, 0, (ci + 1) / 4 - 0.01, 1]);
     } else {
       B.rect(roomFor(o.lit), f, s0, Y0, s1, Y1, d - 0.25, blindCell(cellIx));
     }
@@ -784,7 +784,10 @@ export function dressDistrict(data: HeroData, M: Mats, night: boolean, seed = 11
       if (rest1 - rest0 > 0.7) {
         const ww = Math.min(rest1 - rest0, R.range(0.6, 1.5)), wc = (rest0 + rest1) / 2;
         const wy0 = y0 + R.range(0.9, 1.1), wy1 = wy0 + R.range(0.5, 0.85);
-        windowAt(e, openings, wc - ww / 2, wc + ww / 2, wy0, wy1, { frosted: R.chance(0.6), lit: lit(0.65, 1), grille: R.chance(0.45), bar: true });
+        // (frosted a quarter of the time; the roll's old threshold, 0.6, still says whether the window draws its picture
+        // from the stream, so the shops after it stay what they were)
+        const fr = R.next();
+        windowAt(e, openings, wc - ww / 2, wc + ww / 2, wy0, wy1, { frosted: fr < 0.25, frostDraw: fr < 0.6, lit: lit(0.65, 1), grille: R.chance(0.45), bar: true });
       }
       // posters and a meter
       if (rest1 - rest0 > 0.5 && R.chance(0.3)) {

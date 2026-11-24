@@ -145,17 +145,85 @@ async function vending() {
   await sharp(Buffer.from(m)).png().toFile(join(dir, "vending-glow.png"));
 }
 
-/** Posters and flyers stuck on walls: 4 x 2 cells of 512 x 512 (some portrait halves). */
+/**
+ * Posters and flyers stuck on walls: 4 x 2 cells of 512 x 512, eight bills of a Shinjuku side street about 1980, each
+ * its own layout (a jazz live house, a rakugo evening, draft beer, a folk live, a karaoke contest, a revival cinema, a
+ * bar's reopening, a neighbourhood notice), on paper that has hung there a while: yellowed, darker at its edges, taped
+ * at its corners, now and then a corner torn off. Its own random stream (after the 48 numbers the placeholder drew, so
+ * the textures after it come out as they did). The names and places are made up.
+ */
 async function posters() {
+  for (let i = 0; i < 48; i++) rnd();
+  let ps = 77;
+  const r = () => ((ps = (ps * 16807) % 2147483647) / 2147483647);
   const S = 512;
-  let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${4 * S}" height="${2 * S}">`;
-  for (let i = 0; i < 8; i++) {
-    const x = (i % 4) * S, y = Math.floor(i / 4) * S, hue = Math.floor(rnd() * 360);
-    svg += `<rect x="${x}" y="${y}" width="${S}" height="${S}" fill="hsl(${hue},35%,85%)"/>`;
-    svg += `<rect x="${x + 30}" y="${y + 30}" width="${S - 60}" height="${S * 0.45}" fill="hsl(${(hue + 180) % 360},45%,35%)"/>`;
-    svg += `<text x="${x + S / 2}" y="${y + S * 0.62 + 40}" font-family="${HEAVY}" font-size="64" fill="hsl(${hue},70%,25%)" text-anchor="middle">${esc(pick(["LIVE", "ライブ", "飲み放題", "唄声", "朗読会", "JAZZ", "落語", "古本市"]))}</text>`;
-    for (let l = 0; l < 4; l++) svg += `<rect x="${x + 60}" y="${y + S * 0.8 + l * 22}" width="${(S - 120) * (0.5 + rnd() * 0.5)}" height="9" fill="#333" opacity="0.6"/>`;
-  }
+  const t = (x: number, y: number, size: number, fill: string, text: string, o: { font?: string; anchor?: string; weight?: string; vertical?: boolean; stroke?: string; sw?: number; spacing?: number } = {}) =>
+    `<text x="${x}" y="${y}" font-family="${o.font ?? HEAVY}" font-size="${size}" fill="${fill}" text-anchor="${o.anchor ?? "middle"}"${o.weight ? ` font-weight="${o.weight}"` : ""}${o.vertical ? ` writing-mode="tb" glyph-orientation-vertical="0"` : ""}${o.stroke ? ` stroke="${o.stroke}" stroke-width="${o.sw ?? 2}"` : ""}${o.spacing ? ` letter-spacing="${o.spacing}"` : ""}>${esc(text)}</text>`;
+  const lines = (x: number, y: number, w: number, n: number, color: string, gap = 20) => {
+    let g = "";
+    for (let l = 0; l < n; l++) g += `<rect x="${x}" y="${y + l * gap}" width="${w * (0.55 + r() * 0.45)}" height="8" fill="${color}" opacity="0.7"/>`;
+    return g;
+  };
+  // eight bills, each drawn in a 512 x 512 box at (0, 0)
+  const bills: (() => string)[] = [
+    // a jazz live house: night blue, a horn's bell in brass, the bill of the week
+    () => `<rect width="512" height="512" fill="#14223c"/><circle cx="360" cy="190" r="120" fill="#c8a24a" opacity="0.9"/><circle cx="360" cy="190" r="86" fill="#14223c"/>` +
+      `<rect x="120" y="175" width="250" height="30" rx="14" fill="#c8a24a"/>` + t(160, 120, 92, "#f2e6c8", "JAZZ", { font: "Futura, Avenir Next, sans-serif", weight: "bold", anchor: "start" }) +
+      t(256, 380, 40, "#f2e6c8", "ライブ・アット・ピット") + t(256, 430, 30, "#c8a24a", "11.28 SAT  19:00〜  ¥1,500") + lines(96, 460, 320, 2, "#8090b0", 18),
+    // a rakugo evening: paper white, the title down the right in mincho, the players' names, the red seal
+    () => `<rect width="512" height="512" fill="#efe6d2"/>` + t(430, 70, 80, "#1b1b1b", "新宿寄席", { font: MINCHO, vertical: true, weight: "bold" }) +
+      t(330, 90, 38, "#1b1b1b", "落語の会", { font: MINCHO, vertical: true }) +
+      [0, 1, 2, 3].map((k) => t(230 - k * 50, 110, 30, "#333", ["柳家小つる", "三遊亭円坊", "古今亭志ん", "桂文月"][k], { font: MINCHO, vertical: true })).join("") +
+      `<rect x="40" y="380" width="96" height="96" fill="#b3261e" rx="6"/>` + t(88, 445, 44, "#efe6d2", "寄", { font: MINCHO }) + t(300, 490, 19, "#333", "毎月第三土曜 午後六時開演 木戸銭八百円", { font: MINCHO }),
+    // draft beer: a glass of it (gold, its head), the price large
+    () => `<rect width="512" height="512" fill="#b8171d"/><rect x="60" y="120" width="170" height="300" rx="16" fill="#e8a91c"/><rect x="60" y="100" width="170" height="70" rx="30" fill="#fbf6ea"/>` +
+      `<rect x="74" y="190" width="14" height="200" fill="#fff" opacity="0.35"/>` + t(370, 150, 74, "#fbf6ea", "生ビール") + t(370, 300, 120, "#ffd34d", "¥380", { font: "Futura, Avenir Next, sans-serif", weight: "bold" }) +
+      t(370, 370, 30, "#fbf6ea", "中ジョッキ") + t(256, 470, 30, "#fbf6ea", "毎日 17:00〜19:00"),
+    // a folk live: the sun's rays from a corner, the singer's name
+    () => `<rect width="512" height="512" fill="#f3d36b"/>` + Array.from({ length: 14 }, (_, k) => {
+      const a0 = (k / 14) * Math.PI / 2, a1 = ((k + 0.5) / 14) * Math.PI / 2;
+      return `<polygon points="0,512 ${900 * Math.cos(a0)},${512 - 900 * Math.sin(a0)} ${900 * Math.cos(a1)},${512 - 900 * Math.sin(a1)}" fill="#e08a2a" opacity="0.8"/>`;
+    }).join("") + `<circle cx="0" cy="512" r="130" fill="#c4421e"/>` + t(300, 110, 72, "#3a1d0c", "フォーク", { font: MARU, weight: "bold" }) + t(300, 190, 56, "#3a1d0c", "ライブ", { font: MARU }) +
+      t(310, 300, 30, "#3a1d0c", "うたごえ喫茶 ともしび") + t(330, 350, 30, "#3a1d0c", "12/6 (土) 18:30 開場"),
+    // a karaoke contest: shocking pink, a microphone, the prize
+    () => `<rect width="512" height="512" fill="#e8358f"/><rect x="40" y="40" width="432" height="432" fill="none" stroke="#ffe14a" stroke-width="10" stroke-dasharray="20 14"/>` +
+      `<circle cx="120" cy="190" r="52" fill="#2a2a2a"/><rect x="108" y="236" width="24" height="150" rx="10" fill="#2a2a2a"/>` + t(320, 150, 70, "#ffe14a", "カラオケ", { weight: "bold" }) + t(320, 240, 86, "#fff", "大会", { weight: "bold" }) +
+      t(320, 320, 32, "#fff", "優勝賞金 三万円") + t(256, 430, 28, "#ffe14a", "参加者募集中 スナック 夢路"),
+    // a revival cinema: a still from the film in halftone, the double bill
+    () => `<rect width="512" height="512" fill="#ece7dc"/>` + Array.from({ length: 22 * 14 }, (_, k) => {
+      const cx = 40 + (k % 22) * 20, cy = 40 + Math.floor(k / 22) * 20, g = Math.sin((k % 22) * 0.35) * 0.4 + Math.cos(Math.floor(k / 22) * 0.5) * 0.3 + 0.5;
+      return `<circle cx="${cx}" cy="${cy}" r="${Math.max(0.5, 9 * (1 - g))}" fill="#222"/>`;
+    }).join("") + `<rect x="30" y="330" width="452" height="4" fill="#222"/>` + t(256, 395, 54, "#a3201c", "名画座 二本立て", { font: MINCHO, weight: "bold" }) +
+      t(256, 445, 28, "#222", "「夜の河」「東京の灯」", { font: MINCHO }) + t(256, 485, 22, "#222", "連日 11:00 13:40 16:20 19:00", { font: MINCHO }),
+    // a bar's reopening: red and white, the flower wreaths, the name
+    () => `<rect width="512" height="512" fill="#fdfbf6"/><rect x="0" y="0" width="512" height="120" fill="#c8102e"/>` + t(256, 85, 64, "#fdfbf6", "新装開店", { weight: "bold" }) +
+      [110, 256, 402].map((cx) => `<circle cx="${cx}" cy="230" r="62" fill="#f3a6c0"/><circle cx="${cx}" cy="230" r="30" fill="#ffe14a"/>` +
+        Array.from({ length: 8 }, (_, k) => `<circle cx="${cx + 46 * Math.cos((k * Math.PI) / 4)}" cy="${230 + 46 * Math.sin((k * Math.PI) / 4)}" r="15" fill="#e05a8a"/>`).join("")).join("") +
+      t(256, 370, 70, "#1b1b1b", "スナック 灯", { font: MINCHO, weight: "bold" }) + t(256, 430, 23, "#c8102e", "皆様のお越しを心よりお待ち申し上げます", { font: MINCHO }) + t(256, 475, 26, "#333", "TEL 03-3354-●●●●"),
+    // a neighbourhood notice: grid paper, a hand-lettered heading, the lines of a note
+    () => `<rect width="512" height="512" fill="#f6f3ea"/>` + Array.from({ length: 16 }, (_, k) => `<rect x="0" y="${k * 32}" width="512" height="1" fill="#9db8d6"/><rect x="${k * 32}" y="0" width="1" height="512" fill="#9db8d6"/>`).join("") +
+      t(256, 110, 66, "#1d3f8a", "お知らせ", { font: MARU, weight: "bold" }) + t(256, 190, 30, "#222", "ゴミの日は 月・木 です", { font: MARU }) + t(256, 240, 30, "#222", "前の晩に出さないで下さい", { font: MARU }) +
+      lines(70, 300, 380, 6, "#333", 30) + t(380, 480, 26, "#222", "町会", { font: MARU }),
+  ];
+  let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${4 * S}" height="${2 * S}"><rect width="${4 * S}" height="${2 * S}" fill="#000"/>`;
+  bills.forEach((bill, i) => {
+    const x = (i % 4) * S, y = Math.floor(i / 4) * S;
+    // the bill, yellowed, its edges darker; a corner torn off now and then; tape at its corners
+    const torn = r() < 0.4, cx = r() < 0.5 ? 0 : 512, cy = r() < 0.5 ? 0 : 512, tw = 60 + r() * 50;
+    // (the torn corner: two points in its place, toward the corner before it and toward the one after, in order)
+    const quad = [[0, 0], [512, 0], [512, 512], [0, 512]];
+    const pts = quad.flatMap(([px, py], k) => {
+      if (px !== cx || py !== cy) return [`${px},${py}`];
+      const [bx, by] = quad[(k + 3) % 4], [nx, ny] = quad[(k + 1) % 4], a = tw / 512, b = (tw * 0.8) / 512;
+      return [`${px + (bx - px) * a},${py + (by - py) * a}`, `${px + (nx - px) * b},${py + (ny - py) * b}`];
+    });
+    const clip = torn ? `<clipPath id="c${i}"><polygon points="${pts.join(" ")}"/></clipPath>` : "";
+    svg += `<defs>${clip}<radialGradient id="v${i}" cx="50%" cy="50%" r="70%"><stop offset="60%" stop-color="#5a3c10" stop-opacity="0"/><stop offset="100%" stop-color="#5a3c10" stop-opacity="0.45"/></radialGradient></defs>`;
+    svg += `<g transform="translate(${x},${y})"${torn ? ` clip-path="url(#c${i})"` : ""}>${bill()}<rect width="512" height="512" fill="#c9a24a" opacity="${0.12 + r() * 0.12}"/><rect width="512" height="512" fill="url(#v${i})"/>`;
+    for (let k = 0; k < 120; k++) svg += `<rect x="${r() * 512}" y="${r() * 512}" width="${2 + r() * 6}" height="${2 + r() * 6}" fill="#3a2a10" opacity="${0.05 + r() * 0.1}"/>`;
+    svg += `</g>`;
+    for (const [tx, ty] of [[x + 8, y + 8], [x + 432, y + 8], [x + 8, y + 482], [x + 432, y + 482]]) if (r() < 0.75) svg += `<rect x="${tx}" y="${ty}" width="72" height="22" fill="#e9dfbf" opacity="0.7" transform="rotate(${(r() - 0.5) * 30} ${tx + 36} ${ty + 11})"/>`;
+  });
   await sharp(Buffer.from(svg + "</svg>")).png().toFile(join(dir, "posters.png"));
 }
 
