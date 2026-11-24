@@ -133,6 +133,8 @@ export function heroMaterials(night: boolean) {
   /** Window frames: silver and bronze aluminium, white and black painted. */
   const frames = [aluminium, aluminiumDark, frameWhite, frameBlack];
   const steelDark = new MeshStandardMaterial({ name: "steel dark", color: 0x1f2124, roughness: 0.55, metalness: 0.8 });
+  /** Galvanised sheet (a kitchen's exhaust duct): dull, spangled grey. */
+  const galv = new MeshStandardMaterial({ name: "galvanised duct", color: 0x8f938e, roughness: 0.6, metalness: 0.7 });
   const paintMetal = new MeshStandardMaterial({ name: "painted metal grey", color: 0x6f716e, roughness: 0.5, metalness: 0 });
   const pvc = new MeshStandardMaterial({ name: "pvc pipe", color: 0x9a9b96, roughness: 0.45 });
   const pvcDark = new MeshStandardMaterial({ name: "pvc dark", color: 0x3a3a38, roughness: 0.5 });
@@ -217,7 +219,7 @@ export function heroMaterials(night: boolean) {
     gutterDust: groundFinish("concrete-worn", 2.5, [0.92, 0.87, 0.78], "kerb grit"),
     streak: streakMaterial("streak sill", [0.2, 0.185, 0.165]), drip: streakMaterial("streak drip", [0.13, 0.12, 0.11]),
     walls, wallWeights, bigWalls, plinth, coping, roof, ground, groundB, gutter, grate, doorWood, shutter, shutterPainted, corrugatedEave, rustyMetal,
-    aluminium, aluminiumDark, steelDark, paintMetal, pvc, pvcDark, cable, cableGrey, concretePole, insulator, transformer,
+    aluminium, aluminiumDark, steelDark, galv, paintMetal, pvc, pvcDark, cable, cableGrey, concretePole, insulator, transformer,
     glass, frosted, curtainGlass, spandrels, helipadPaint, helipadWhite, aviation, roomLit, roomDim, roomDark, rooms, neon, trims, frames, frameWhite, frameBlack, roomBar, roomShop, roomOffice, tank, laundry, notices, gasPipe, signBox, signBlade, lanternPaper, norenCloth, poster, signFrame, bulb, globe, vending, vendingBody,
   };
 }

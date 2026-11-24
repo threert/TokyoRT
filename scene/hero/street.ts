@@ -4,7 +4,7 @@
 import { MeshStandardMaterial } from "@threert/scene";
 import { Batches, cross, Frame, norm, rng, sub, type V3 } from "./builder.ts";
 
-export const STREET_MODELS = ["aircon", "airconRust", "crate1", "crate2", "crate3", "propane", "trashbag", "plant1", "plant2", "plant4", "planter", "stool", "box", "can", "wcrate", "powerbox", "camera", "wallLamp", "socket", "manhole", "utility"] as const;
+export const STREET_MODELS = ["aircon", "airconRust", "crate1", "crate2", "crate3", "propane", "trashbag", "plant1", "plant2", "plant4", "planter", "stool", "box", "can", "wcrate", "powerbox", "camera", "wallLamp", "socket", "manhole", "utility", "mopbucket"] as const;
 export type StreetModel = (typeof STREET_MODELS)[number];
 const MODEL_KEYS = STREET_MODELS;
 
@@ -166,6 +166,14 @@ export function streetModel(key: StreetModel): Batches {
         rod(steel, [.145 * Math.cos(a), .11, .145 * Math.sin(a)], [.145 * Math.cos(a), .36, .145 * Math.sin(a)], .004);
       }
     }
+  } else if (key === "mopbucket") {
+    // a cleaner's blue bucket, a wringer on its rim, the mop leaning in it against the wall (+z)
+    const pail = paint("pail blue", 0x2f6fa8, .55), grey = paint("mop grey", 0x9c9a92, .9);
+    cyl(pail, 0, 0, 0, .14, .17, .28);
+    ring(steel, 0, .28, 0, .17, .008);
+    box(pail, .1, .28, 0, .07, .07, .2);
+    rod(cedar, [0, .1, -.02], [0, 1.25, .16], .013);
+    box(grey, 0, .02, -.03, .22, .05, .1);
   } else if (key === "trashbag") {
     cyl(dark, 0, 0, 0, .105, .16, .16, 11);
     cyl(dark, 0, .16, 0, .16, .08, .14, 11);

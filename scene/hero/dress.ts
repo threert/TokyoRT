@@ -171,6 +171,14 @@ export function dressDistrict(data: HeroData, M: Mats, night: boolean, seed = 11
     }
   }
   /** The top of the highest building at (x, z) but `skip` (-Infinity: none). */
+  // the cell's roads (the compiled carriageways and roads), for which way a building faces
+  const roadRings = data.areas.filter((a) => a.kind === 0 || a.kind === 1).map((a) => a.rings);
+  const inRing = (x: number, z: number, r: number[]) => {
+    let c = false;
+    for (let i = 0, n = r.length / 2, j = n - 1; i < n; j = i++) if ((r[i * 2 + 1] > z) !== (r[j * 2 + 1] > z) && x < ((r[j * 2] - r[i * 2]) * (z - r[i * 2 + 1])) / (r[j * 2 + 1] - r[i * 2 + 1]) + r[i * 2]) c = !c;
+    return c;
+  };
+  const onRoad = (x: number, z: number) => roadRings.some((rs) => inRing(x, z, rs[0]) && !rs.slice(1).some((h) => inRing(x, z, h)));
   const topAt = (x: number, z: number, skip?: Bldg) => {
     let t = -Infinity;
     for (const b of grid.get(key(Math.floor(x / CELL), Math.floor(z / CELL))) ?? []) {
@@ -220,6 +228,20 @@ export function dressDistrict(data: HeroData, M: Mats, night: boolean, seed = 11
       curtain: hr ? { glass: hr.glass.name, spandrel: hr.spandrel.name, fin: hr.fin.name, spandrelH: hr.spandrelH } : null,
       windows: { layout: W.layout, w: +W.wFrac.toFixed(3), h: +W.hFrac.toFixed(3), frame: W.frame.name },
     });
+    // which side is the front: the wall that faces the most open ground (the street, not the gap to the next block)
+    const openAhead = b.pts.map(([ax, az], i) => {
+      const [cx, cz] = b.pts[(i + 1) % b.pts.length], l = Math.hypot(cx - ax, cz - az);
+      if (l < 1) return 0;
+      let nx = -(cz - az) / l, nz = (cx - ax) / l;
+      const mx = (ax + cx) / 2, mz = (az + cz) / 2;
+      if (inside(b.pts, mx + nx * 0.05, mz + nz * 0.05)) { nx = -nx; nz = -nz; }
+      let d = 0.5;
+      while (d < 20 && topAt(mx + nx * d, mz + nz * d, b) === -Infinity) d += 0.5;
+      // (a road in front makes it a front, whatever lies open elsewhere: a car park behind is no street)
+      const probe = Math.min(d, 6) - 0.5;
+      return d + (onRoad(mx + nx * probe, mz + nz * probe) ? 100 : 0);
+    });
+    const frontEdge = openAhead.indexOf(Math.max(...openAhead));
     for (let i = 0; i < b.pts.length; i++) {
       const [ax, az] = b.pts[i], [cx, cz] = b.pts[(i + 1) % b.pts.length];
       const L = Math.hypot(cx - ax, cz - az);
@@ -258,7 +280,7 @@ export function dressDistrict(data: HeroData, M: Mats, night: boolean, seed = 11
       edges.push(e);
       const openings: Opening[] = [];
       const hero = inBox(mx, mz);
-      if (exposed && hero && small) dressSmall(e, openings, wallMat);
+      if (exposed && hero && small) dressSmall(e, openings, wallMat, openAhead[i] >= openAhead[frontEdge] - 1);
       else if (exposed && L >= 2 && !ab.noMid) dressMid(e, openings, st, i === st.balconyEdge, i === st.longest);
       wall(e, openings, wallMat);
       if (exposed && L >= 2 && !ab.noMid && !(hero && small) && !st.highrise) secondary(e, st, openings, i === st.longest);
@@ -553,7 +575,7 @@ export function dressDistrict(data: HeroData, M: Mats, night: boolean, seed = 11
   }
 
   /** The dressing of a small building's open wall (Golden Gai's bars): its ground floor unit by unit, the floors above. */
-  function dressSmall(e: Edge, openings: Opening[], wallMat: typeof M.roof) {
+  function dressSmall(e: Edge, openings: Opening[], wallMat: typeof M.roof, front: boolean) {
     const { f, L, floors } = e;
     const base = f.o[1], y0 = floors[0], gTop = floors[1] ?? floors[floors.length - 1];
     const units = Math.max(1, Math.round(L / R.range(2.6, 3.6)));
@@ -727,26 +749,37 @@ export function dressDistrict(data: HeroData, M: Mats, night: boolean, seed = 11
         return [at[0], gy, at[2]] as V3;
       };
       const free0 = left ? ds1 + 0.35 : s0 + 0.2, free1 = left ? s1 - 0.2 : ds0 - 0.35;
-      for (let pick = 0; pick < 2 && free1 - free0 > 0.35; pick++) {
-        const roll = R.next();
-        const s = R.range(free0, free1);
-        // kept tidy: plants and a stool by the door, crates stacked square, a bin bag only now and then
-        if (roll < 0.14) {
-          const kind = R.pick(["crate1", "crate2", "crate3"] as const);
-          const h = kind === "crate3" ? 0.27 : 0.26, n = 1 + R.int(3);
-          for (let q = 0; q < n; q++) place(kind, add(clutter(s, 0.28), [0, q * h, 0]), f.n, 1, (R.next() - 0.5) * 0.06);
-        } else if (roll < 0.19) place("propane", clutter(s, 0.25), f.n, 1, R.next() * 6);
-        else if (roll < 0.22) {
-          place("trashbag", clutter(s, 0.3 + R.range(0, 0.2)), f.n, R.range(0.8, 1.0), R.next() * 6);
-        } else if (roll < 0.47) place(R.pick(["plant1", "plant2", "planter", "plant2"] as const), clutter(s, 0.3), f.n, R.range(0.8, 1.0), R.next() * 6);
-        else if (roll < 0.55) place("stool", clutter(s, 0.35), f.n, 1, R.next() * 6);
-        else if (roll < 0.58) place("box", clutter(s, 0.3), f.n, 1, R.next() * 6);
-        else if (roll < 0.62) place("planter", clutter(s, 0.3), f.n, 1, R.next() * 0.2);
-        else if (roll < 0.8) {
-          for (let q = 0; q < 2 + R.int(3); q++) place("plant4", clutter(s + q * 0.18, 0.15), f.n, R.range(1.2, 2.0), R.next() * 6);
-        } else if (roll < 0.86) prop((b, pm, a, fc, r) => beerCases(b, pm, a, fc, r, 3), "beercases", 6, clutter(s, 0.3), f.n);
-        else if (roll < 0.91) prop(umbrellaStand, "umbrellas", 4, clutter(s, 0.25), f.n);
-        else if (roll < 0.96) prop(aBoard, "aboard", 4, clutter(s, 0.45), f.n);
+      // what stands by a door is what happens there (roadmap 6c): on the street front, the shop's welcome (its board,
+      // potted plants by the door, the umbrella stand, a stool for the smokers); at a back door, the service (empty beer
+      // cases stacked to go back, the propane, the bins and bin bags, the mop and bucket, the kitchen's exhaust duct)
+      const room = free1 - free0;
+      const nextTo = (q: number) => (left ? free0 + q : free1 - q);
+      if (front) {
+        if (room > 0.5 && R.chance(0.45)) prop(aBoard, "aboard", 4, clutter(nextTo(0.25), 0.5), f.n);
+        // plants in pots on both sides of the door
+        for (const side of [left ? ds0 - 0.2 : ds1 + 0.2, nextTo(0.15)]) {
+          if (!R.chance(0.55) || side < s0 + 0.1 || side > s1 - 0.1) continue;
+          if (R.chance(0.4)) for (let q = 0; q < 2 + R.int(2); q++) place("plant4", clutter(side + (q - 1) * 0.16, 0.15), f.n, R.range(1.2, 2.0), R.next() * 6);
+          else place(R.pick(["plant1", "plant2", "planter"] as const), clutter(side, 0.3), f.n, R.range(0.8, 1.0), R.next() * 6);
+        }
+        if (room > 0.9 && R.chance(0.3)) prop(umbrellaStand, "umbrellas", 4, clutter(nextTo(0.7), 0.25), f.n);
+        if (room > 1.2 && R.chance(0.2)) place("stool", clutter(nextTo(1.0), 0.4), f.n, 1, R.next() * 6);
+      } else {
+        let q = 0.25;
+        if (room > q + 0.3 && R.chance(0.65)) { prop((b, pm, a, fc, r) => beerCases(b, pm, a, fc, r, 2 + R.int(4)), "beercases", 6, clutter(nextTo(q), 0.3), f.n); q += 0.5; }
+        if (room > q + 0.3 && R.chance(0.35)) { place("propane", clutter(nextTo(q), 0.25), f.n, 1, R.next() * 6); q += 0.35; }
+        if (room > q + 0.3 && R.chance(0.5)) { place("can", clutter(nextTo(q), 0.3), f.n, 1, R.next() * 6); q += 0.35; }
+        for (let k = 0; k < R.int(3) && room > q + 0.3; k++) { place("trashbag", clutter(nextTo(q), 0.3 + R.range(0, 0.15)), f.n, R.range(0.8, 1.0), R.next() * 6); q += 0.3; }
+        if (room > q + 0.3 && R.chance(0.35)) { place("mopbucket", clutter(nextTo(q), 0.22), f.n, 1, (R.next() - 0.5) * 0.4); q += 0.35; }
+        // the kitchen's exhaust: a galvanised duct out of the wall over the door, up to the eave, a cowl at its top
+        if (R.chance(0.4)) {
+          const xs = left ? ds1 + 0.3 : ds0 - 0.3, dy0 = y0 + dh + 0.35, dy1 = Math.max(dy0 + 1, gTop + 1.2);
+          if (xs > s0 + 0.2 && xs < s1 - 0.2) {
+            B.box(M.galv, f, xs - 0.13, xs + 0.13, Y(dy0), Y(dy1), 0.02, 0.28, { skip: "b" });
+            B.box(M.galv, f, xs - 0.2, xs + 0.2, Y(dy1), Y(dy1) + 0.06, 0, 0.36);
+            count("ducts");
+          }
+        }
       }
       // a neon emblem on the wall now and then
       if (R.chance(0.12) && w > 1.6) neonShape(f, left ? s1 - 0.45 : s0 + 0.45, Y(y0 + dh + 0.4), 0.45, 0.05, R.pick(M.neon));
