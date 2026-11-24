@@ -317,9 +317,10 @@ export function buildingMesh(buildings, tx, tz, marks = []) {
     // (how tall is taken from the shell itself: the height on record is not always that of the whole tower)
     const shellTop = (list) => { let y = -Infinity; for (const f of list) for (let k = 1; k < f.rings[0].length; k += 3) y = Math.max(y, f.rings[0][k]); return y; };
     const glassTower = !!b.surfaces?.length && !b.surfaces.some((f) => f.uv) && Math.max(b.height, shellTop(b.surfaces) - b.base) > 90;
-    const cat = material === MATERIAL.GLASS || glassTower ? CAT.GLASS : category(b.usage, b.height, seed);
+    // (ThreeRT: `b.look`, the colour and curtain wall the near levels' dressing gave it, when the caller has them)
+    const cat = b.look?.curtain || material === MATERIAL.GLASS || glassTower ? CAT.GLASS : category(b.usage, b.height, seed);
     const pal = PALETTE[cat], pick = pal[Math.floor(rnd() * pal.length)], tone = 0.92 + 0.16 * rnd();
-    const wallCol = glassTower ? lin([0.3, 0.35, 0.41].map((c) => c * tone)) : painted ? lin(b.surfaces?.some((f) => f.uv) ? [((b.hint >> 16) & 255) / 255, ((b.hint >> 8) & 255) / 255, (b.hint & 255) / 255] : paint([((b.hint >> 16) & 255) / 255, ((b.hint >> 8) & 255) / 255, (b.hint & 255) / 255])) : lin(aerial(pick.slice(0, 3)).map((c) => Math.min(1, c * tone)));
+    const wallCol = b.look ? b.look.wall : glassTower ? lin([0.3, 0.35, 0.41].map((c) => c * tone)) : painted ? lin(b.surfaces?.some((f) => f.uv) ? [((b.hint >> 16) & 255) / 255, ((b.hint >> 8) & 255) / 255, (b.hint & 255) / 255] : paint([((b.hint >> 16) & 255) / 255, ((b.hint >> 8) & 255) / 255, (b.hint & 255) / 255])) : lin(aerial(pick.slice(0, 3)).map((c) => Math.min(1, c * tone)));
     const wallLayer = HINT_LAYER[material] ?? pick[3];
     const top = b.base + b.height, bottom = b.base - SINK;
     const outer = b.polygons[0][0];

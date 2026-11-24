@@ -73,11 +73,21 @@ const midGlow = new MaterialFunction("TokyoMidGlow", {
 const ROOM_DAY = { room: 1300, shop: 2500 };
 // The far tile already has each window, sign and lamp in its night nodes. Keep that geometry resident.
 // Unlit glTF materials carry their authored glow as base colour. Restore their daylight surfaces when power is off.
+// By day a far window is the pane in front of a room, as the near levels' windows are: the room at the brightness it has
+// there through the glass (`customData[0]`, nits: 0 by night, when the lit ones are the night nodes' own), so a building
+// does not change its tone between the mid level and the far one. Live: the time of day sets it on the far models.
 const farWindows = new MaterialFunction("TokyoFarGlass", {
   code: `if (i.power < 0.5) {
-    o.base = vec3<f32>(0.02, 0.022, 0.025); o.emissive = vec3<f32>(0.0); o.specular = 0.5;
+    o.base = vec3<f32>(0.02, 0.022, 0.025); o.specular = 0.5;
+    o.emissive = vec3<f32>(1.0, 0.93, 0.82) * i.custom.x;
   }`,
 }).with();
+const farRooms = new MaterialFunction("TokyoFarRoom", {
+  code: `o.emissive = vec3<f32>(1.0, 0.93, 0.82) * i.custom.x;`,
+}).with();
+/** A far window's room by day (nits, through its pane): set where the skyline's 480 m switch changed least (0, 150,
+ *  300, 500 nits: mean ΔE 0.68, 0.63, 0.60, 0.59). */
+const FAR_ROOM_DAY = 300;
 const farSigns = new MaterialFunction("TokyoFarSign", {
   code: `if (i.power < 0.5) {
     var paper = vec3<f32>(1.0);
@@ -485,6 +495,7 @@ function setTime(next: Time, camera: PerspectiveCamera) {
       mat.shader = midGlow.with({ ...binding.params, IsNight: night ? 1 : 0 }, binding.textures);
     }
     for (const f of farQ.values()) if (f.lights && !f.covered) f.lights.power = night ? 1 : 0;
+    for (const f of farQ.values()) for (const m of [f.base, f.lights]) if (m) m.customData = [night ? 0 : FAR_ROOM_DAY, 0, 0, 0];
   }
   console.log(`Tokyo · ${time} · 1 Day / 2 Dusk / 3 Night / T Cycle`);
 }
@@ -534,8 +545,9 @@ export function sceneFor(room: string) {
       const model = (names: string[], lights = false) => {
         const nodes = names.filter((n) => has.has(n));
         if (!nodes.length) return null;
-        const m = new GLTFModel(uri, { nodes, ...(lights ? { functions: { "window lit far ": farWindows, "signs night ": farSigns } } : {}) });
+        const m = new GLTFModel(uri, { nodes, functions: lights ? { "window lit far ": farWindows, "signs night ": farSigns } : { "window glass": farRooms } });
         if (lights && !night) m.power = 0;
+        m.customData = [night ? 0 : FAR_ROOM_DAY, 0, 0, 0];
         scene.add(m);
         return m;
       };

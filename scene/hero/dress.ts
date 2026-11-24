@@ -58,7 +58,17 @@ export interface DressOptions {
   record?: Placement[];
   /** Repeated elements (windows, ...) to this sink in their own frames rather than into the batches (baking). */
   kit?: (piece: KitPiece) => void;
+  /** Each building dressed, its look (baking: the far level takes its colours from it, so the levels agree). */
+  looks?: Map<number, BuildingLook>;
 }
+
+/** What a building looks like from afar, as the dress drew it: its wall finish, a tower's curtain wall, and how much
+ *  of a wall its windows take (material names: the scene's). */
+export type BuildingLook = {
+  wall: string; kind: "commercial" | "office" | "apartment" | "house";
+  curtain: { glass: string; spandrel: string; fin: string; spandrelH: number } | null;
+  windows: { layout: string; w: number; h: number; frame: string };
+};
 
 /** One random stream per building (and per thing outside buildings): what a building looks like does not depend on
  *  which others are dressed with it, so a baked cell and its neighbours agree, and so do the two levels. */
@@ -203,6 +213,12 @@ export function dressDistrict(data: HeroData, M: Mats, night: boolean, seed = 11
     const st = styleOf(b, storeys);
     W = moduleOf(st, small, storeys);
     stairDone = false;
+    const hr = st.highrise;
+    ab.looks?.set(b.id, {
+      wall: wallMat.name, kind: st.kind,
+      curtain: hr ? { glass: hr.glass.name, spandrel: hr.spandrel.name, fin: hr.fin.name, spandrelH: hr.spandrelH } : null,
+      windows: { layout: W.layout, w: +W.wFrac.toFixed(3), h: +W.hFrac.toFixed(3), frame: W.frame.name },
+    });
     for (let i = 0; i < b.pts.length; i++) {
       const [ax, az] = b.pts[i], [cx, cz] = b.pts[(i + 1) % b.pts.length];
       const L = Math.hypot(cx - ax, cz - az);

@@ -17,12 +17,13 @@ node tools/tokyo/prefetch-plateau.mjs --area="$AREA"
 node tools/tokyo/prefetch-osm.mjs --area="$AREA"
 node tools/city/pipeline/fetch.mjs --area="$AREA"
 node --max-old-space-size=8192 tools/city/pipeline/compile.mjs --area="$AREA"
-# the far level: every tile's ground, and its buildings, props and trees by 128 m quadrant
-node --max-old-space-size=8192 tools/tokyo/to-glb.ts --area="$AREA" --city --out="$AREA-far"
 # the signs, lanterns, noren, menus and labels (drawn with the system's Japanese fonts)
 node tools/tokyo/hero-textures.ts
 node tools/tokyo/hero-props-textures.ts
 # the near levels: every 128 m cell dressed at mid distance (L1) and at street level (L0)
 node --max-old-space-size=24000 tools/tokyo/city-bake.ts --area="$AREA"
+# the far level: every tile's ground, and its buildings, props and trees by 128 m quadrant, in the
+# colours the near levels gave each building (city-bake's looks.json)
+node --max-old-space-size=8192 tools/tokyo/to-glb.ts --area="$AREA" --city --out="$AREA-far"
 node tools/bundle.ts
 echo "done: tools/demo.sh day"

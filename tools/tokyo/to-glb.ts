@@ -18,7 +18,7 @@
 //     client's atlas (cutouts would cost every ray the renderer's alpha-test loop).
 // Not yet: billboards and screens: ROADMAP § 0 step 1.
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { decodeTile } from "../city/shared/tileformat.js";
@@ -34,6 +34,7 @@ import { decalGeometry, decalShapes } from "./decals.ts";
 import { WINDOW_GROUPS, WINDOW_NODES, WINDOW_SWITCH } from "../../scene/area.ts";
 import { createDraper } from "../city/mesh/drape.js";
 import { PROP } from "../city/shared/tileformat.js";
+import type { BuildingLook } from "../../scene/hero/dress.ts";
 
 const area = (process.argv.find((a) => a.startsWith("--area=")) ?? "--area=shinjuku").split("=")[1];
 const flag = (k: string) => process.argv.find((a) => a.startsWith(`--${k}=`))?.split("=")[1];
@@ -245,6 +246,37 @@ const build = createHash("sha256");
 // 128 m quadrant q (0..3: +x half, then +z half) in nodes b<q> (lit windows and signs: b<q>-night / b<q>-day), p<q>
 // (lamp heads: p<q>-night / p<q>-day) and t<q>, so the scene can hide a quadrant's own when a nearer level shows it.
 const cityLevel = process.argv.includes("--city");
+// The near levels' looks (looks.json, tools/tokyo/city-bake.ts): a building far away keeps the wall colour the dress gave
+// it near, and a tower its curtain wall (the windows a curtain grid, the wall between them its spandrels' colour).
+// Ids are the tiles' buildings in city-bake's order (the files sorted, a building's polygons each one).
+type Looks = { looks: Record<string, BuildingLook>; materials: Record<string, { albedo: number[] }> };
+const looksFile = join(city, "baked", area, "looks.json");
+const looks: Looks | null = cityLevel && existsSync(looksFile) ? JSON.parse(readFileSync(looksFile, "utf8")) : null;
+const firstId = new Map<string, number>();
+if (looks) {
+  let id = 0;
+  for (const f of readdirSync(tilesDir).filter((f) => /^t_.*\.bin$/.test(f)).sort()) {
+    firstId.set(f, id);
+    const tb = readFileSync(join(tilesDir, f));
+    for (const bd of decodeTile(tb.buffer.slice(tb.byteOffset, tb.byteOffset + tb.byteLength)).buildings) for (const p of bd.polygons) if (p[0]) id++;
+  }
+} else if (cityLevel) console.warn(`(no ${looksFile}: the far level in the source's colours; run tools/tokyo/city-bake.ts first)`);
+const albedo = (name: string) => (looks!.materials[name]?.albedo ?? [0.5, 0.5, 0.5]).map((v) => Math.min(0.9, v));
+/** A tower's vision glass far away: the dress's curtain glass (tinted, the rooms behind it) as an opaque pane of its
+ *  colour at the brightness it reads by day. */
+const CURTAIN_FAR = 0.35;
+const curtainGlass = (name: string): Omit<Material, "name"> => ({ color: albedo(name).map((v) => v * CURTAIN_FAR) as [number, number, number], roughness: 0.04, ior: 1.5 });
+/** Each building's look (`b.look`, read by the mesher) from looks.json, before any filter changes the order. */
+function setLooks(tile: ReturnType<typeof decodeTile>, file: string) {
+  if (!looks) return;
+  let id = firstId.get(file) ?? 0;
+  for (const b of tile.buildings as { polygons: Float32Array[][]; look?: { wall: number[]; curtain: string | null } }[]) {
+    let first = -1;
+    for (const p of b.polygons) if (p[0]) { if (first < 0) first = id; id++; }
+    const l = looks.looks[first];
+    if (l) b.look = { wall: albedo(l.curtain ? l.curtain.spandrel : l.wall), curtain: l.curtain?.glass ?? null };
+  }
+}
 async function cityTile(tile: ReturnType<typeof decodeTile>, tl: Manifest["tiles"][number], g: GlbBuilder, tag: string) {
   const x0 = tl.x * size, z0 = tl.z * size, half = size / 2;
   const quad = (x: number, z: number) => (x >= x0 + half ? 1 : 0) + (z >= z0 + half ? 2 : 0);
@@ -297,8 +329,16 @@ async function cityTile(tile: ReturnType<typeof decodeTile>, tl: Manifest["tiles
     const bs = tile.buildings.filter((b: { polygons: Float32Array[][] }) => b.polygons[0]?.[0] && quad(...cen(b.polygons[0][0])) === q);
     const ss = tile.signs.filter((sg: { x: number; z: number }) => quad(sg.x, sg.z) === q);
     if (!bs.length && !ss.length) continue;
-    const mq = buildTile({ ...tile, buildings: bs, signs: ss, areas: [], props: [], walls: [], wires: new Float32Array(0) }, grid, size, surface, []);
-    const bd = mq.buildings, B = `b${q}`;
+    // (by curtain wall: a tower's windows in its own glass; the signs with the first group)
+    const groups = new Map<string, typeof bs>();
+    for (const b of bs) { const k = (b as { look?: { curtain: string | null } }).look?.curtain ?? ""; (groups.get(k) ?? groups.set(k, []).get(k)!).push(b); }
+    if (!groups.size) groups.set("", []);
+    let mq: ReturnType<typeof buildTile> | null = null;
+    const B = `b${q}`;
+    for (const [curtain, gb] of groups) {
+    const m1 = buildTile({ ...tile, buildings: gb, signs: mq ? [] : ss, areas: [], props: [], walls: [], wires: new Float32Array(0) }, grid, size, surface, []);
+    mq ??= m1;
+    const bd = m1.buildings;
     if (bd.position.length) {
       soupTo(g, bd, (tri) => {
         const kind = bd.aBldg[tri * 12 + 2], c = colorOf(bd.color, tri);
@@ -316,14 +356,15 @@ async function cityTile(tile: ReturnType<typeof decodeTile>, tl: Manifest["tiles
         g.triangles(g.material(mat), pos, nor, null, Uint32Array.from({ length: pos.length / 3 }, (_, i) => i), node);
       };
       const glass: Omit<Material, "name"> = { color: [0.02, 0.022, 0.025], roughness: 0.04, ior: 1.5 };
-      put(w.glass, { name: "window glass", ...glass }, B);
+      put(w.glass, curtain ? { name: `window glass ${curtain}`, ...curtainGlass(curtain) } : { name: "window glass", ...glass }, B);
       // (unlit: seen, lighting nothing; a far city's 1.3 M window triangles out of the light list)
       w.lit.forEach((group) => group.forEach((bins, i) => bins.forEach((sp, j) => put(sp, { name: `window lit far ${i} ${j}`, ...glass, emissive: LIT_COLOURS[i], emissiveStrength: LIT_NITS * LIT_GLOW[j], unlit: true }, `${B}-night`))));
       totals.windows += w.count;
       totals.litWindows += w.litCount;
     }
+    }
 
-    if (mq.signs?.length) {
+    if (mq?.signs?.length) {
       const sb = await signBoards(mq.signs);
       if (sb) {
         for (const [p, pg] of sb.pages.entries()) {
@@ -361,6 +402,7 @@ function soupTo(g: GlbBuilder, a: { position: Float32Array; normal: Float32Array
 for (const tl of manifest.tiles) {
   if (only && !only.includes(`${tl.x}_${tl.z}`)) continue;
   const tile = decodeTile(new Uint8Array(readFileSync(join(tilesDir, tl.file))).buffer);
+  if (cityLevel) setLooks(tile, tl.file);
   if (strip) {
     const [sx0, sz0, sx1, sz1] = strip;
     const c = (r: Float32Array) => { let x = 0, z = 0; for (let i = 0; i < r.length; i += 2) { x += r[i]; z += r[i + 1]; } return [x / (r.length / 2), z / (r.length / 2)]; };

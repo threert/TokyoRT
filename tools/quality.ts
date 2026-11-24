@@ -21,6 +21,7 @@ import sharp from "sharp";
 import { join } from "node:path";
 import { bundleGame } from "../engine/tools/bundle-game.ts";
 import { startLive, type Build, type Live } from "../engine/tools/lib/live.ts";
+import { waitGpuLock } from "../engine/tools/lib/bench.ts";
 import { repoRoot } from "./lib/paths.ts";
 
 type V3 = [number, number, number];
@@ -46,6 +47,8 @@ const W = 1280, H = 720, FOV = 70;
 const K = Number(opt("--average") ?? 8), GAP = 6;
 mkdirSync(out, { recursive: true });
 
+// (the GPU lock while it renders: a measurement another run is timing is not skewed by these renders)
+await waitGpuLock("tokyo-quality", 120 * 60_000);
 const bin = join(repoRoot, "engine/renderer/target/release/threert-render");
 const bundle = join(repoRoot, "out/bundles/city.js");
 await bundleGame(join(repoRoot, "scene/city.game.ts"), bundle);

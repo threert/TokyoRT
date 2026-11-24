@@ -3,7 +3,8 @@
 // as one binary per cell and level that scene/city.game.ts reads (`readAsset`) and adds as meshes in place.
 //
 //   node --max-old-space-size=16384 tools/tokyo/city-bake.ts [--area=shinjuku] [--only=i_j,...] [--levels=0,1] [--out=baked]
-//     -> assets/city/<out>/<area>/L<level>/c_<i>_<j>.bin, kit.bin, index.json
+//     -> assets/city/<out>/<area>/L<level>/c_<i>_<j>.bin, kit.bin, index.json, looks.json
+//   (--looks-only: looks.json alone, quickly: the buildings' looks without their dressing)
 //
 // A cell file: "TKC1", u32 header bytes, the header (JSON: its meshes — material name, vertex and index counts — its
 // placements, and its kit instances — kit piece and count), padded to 4 bytes; then per mesh positions (3 x f32), normals
@@ -12,13 +13,17 @@
 // The kit (kit.bin, the same layout: "TKK1", its header — per piece its parts, material name, vertex and index counts,
 // and how often it is used — then per part positions, normals, UVs, indices): every repeated element the dressing made (windows, ...), once, in its
 // own frame. A cell holds where its elements stand; the scene places them as instances of the kit's meshes.
+// looks.json: each building's look as the dress drew it (wall finish, curtain wall, windows; `BuildingLook`) by its id
+// (the order of the tiles' buildings, as tools/tokyo/to-glb.ts reads them), and each material named there with its mean
+// linear albedo: the far level's colours (to-glb.ts --city), so a building does not change colour between levels.
 // Derived from PLATEAU / OSM / GSI: ODbL, kept out of git like the tiles.
+import sharp from "sharp";
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { decodeTile } from "../city/shared/tileformat.js";
 import { makeSurface } from "../city/shared/decks.js";
 import { repoRoot } from "../lib/paths.ts";
-import { dressDistrict, type HeroData, type Placement } from "../../scene/hero/dress.ts";
+import { dressDistrict, type BuildingLook, type HeroData, type Placement } from "../../scene/hero/dress.ts";
 import { Batches, rng, type KitPiece, type V3 } from "../../scene/hero/builder.ts";
 import { STREET_MODELS, streetModel } from "../../scene/hero/street.ts";
 import { LIFT, streetPropParts } from "../../scene/hero/streetprops.ts";
@@ -199,6 +204,47 @@ function mergeRare(entries: Entry[], instances: Instances): Entry[] {
   return out;
 }
 
+/** looks.json (see the top): the looks, and the mean linear albedo of each material they name. */
+async function writeLooks() {
+  if (only) return;
+  const byName = new Map<string, { color: { r: number; g: number; b: number }; transmission?: number; p?: { map?: { uri: string } } }>();
+  const collectMats = (v: unknown, depth = 0) => {
+    if (!v || typeof v !== "object" || depth > 3) return;
+    const m = v as { name?: string; color?: { r: number } };
+    if (typeof m.name === "string" && m.color && typeof m.color.r === "number") { if (!byName.has(m.name)) byName.set(m.name, v as never); return; }
+    for (const x of Object.values(v)) collectMats(x, depth + 1);
+  };
+  collectMats(M);
+  const used = new Set<string>();
+  for (const l of looks.values()) {
+    used.add(l.wall);
+    used.add(l.windows.frame);
+    if (l.curtain) for (const k of [l.curtain.glass, l.curtain.spandrel, l.curtain.fin]) used.add(k);
+  }
+  const lin = (c: number) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
+  const texMean = new Map<string, number[]>();
+  const materials: Record<string, { albedo: number[]; transmission?: number }> = {};
+  for (const name of used) {
+    const m = byName.get(name);
+    if (!m) { console.warn(`looks: no material ${name}`); continue; }
+    let base = [1, 1, 1];
+    const uri = m.p?.map?.uri;
+    if (uri) {
+      if (!texMean.has(uri)) {
+        const { data, info } = await sharp(join(repoRoot, uri)).resize(64, 64, { fit: "fill" }).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+        const s = [0, 0, 0];
+        for (let k = 0; k < data.length; k++) s[k % 3] += lin(data[k] / 255);
+        texMean.set(uri, s.map((v) => v / (info.width * info.height)));
+      }
+      base = texMean.get(uri)!;
+    }
+    const c = [m.color.r, m.color.g, m.color.b];
+    materials[name] = { albedo: base.map((v, k) => +(v * c[k]).toFixed(4)), ...(m.transmission ? { transmission: m.transmission } : {}) };
+  }
+  writeFileSync(join(outDir, "looks.json"), JSON.stringify({ looks: Object.fromEntries(looks), materials }));
+  console.log(`looks: ${looks.size} buildings, ${Object.keys(materials).length} materials -> ${join(outDir, "looks.json")}`);
+}
+
 function header(magic: string, json: unknown) {
   const head = Buffer.from(JSON.stringify(json));
   const pad = (4 - ((8 + head.length) % 4)) % 4;
@@ -240,13 +286,19 @@ let index: { cell: number; cells: Record<string, Record<string, { tris: number; 
 try { index = JSON.parse(readFileSync(indexFile, "utf8")); } catch { /* new */ }
 const t0 = Date.now();
 let n = 0, tris = [0, 0], inst = [0, 0], instTris = [0, 0];
+const looks = new Map<number, BuildingLook>();
+const looksOnly = process.argv.includes("--looks-only");
 for (const [i, j] of cells) {
   const key = `${i}_${j}`;
   if (only && !only.includes(key)) continue;
   const data = cellData(i, j);
+  if (looksOnly) {
+    dressDistrict(data, M, true, 11, { cell: data.box, noMid: true, noProps: true, record: [], kit: () => {}, looks });
+    continue;
+  }
   for (const L of levels) {
     const record: Placement[] = [], instances: Instances = new Map();
-    const d = dressDistrict(data, M, true, 11, { cell: data.box, full: L === 0, record, kit: collect(instances) });
+    const d = dressDistrict(data, M, true, 11, { cell: data.box, full: L === 0, record, kit: collect(instances), looks });
     const rest = placementsToKit(record, instances);
     streetPropsToKit(i, j, L, instances);
     const r = write(join(outDir, `L${L}`, `c_${key}.bin`), mergeRare(d.batches.entries(), instances), rest, instances);
@@ -257,6 +309,8 @@ for (const [i, j] of cells) {
   }
   if (++n % 25 === 0) console.log(`  ${n} cells, ${((Date.now() - t0) / 1000).toFixed(0)} s`);
 }
+await writeLooks();
+if (looksOnly) process.exit(0);
 if (only) console.log("(--only: the kit holds those cells' pieces alone; bake every cell before streaming them)");
 {
   const uses = [...kit.values()].map((k) => k.uses).sort((a, b) => b - a), total = uses.reduce((a, b) => a + b, 0);

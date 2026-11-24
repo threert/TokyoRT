@@ -14,6 +14,8 @@ tiles into geometry. Imported from [jeantimex/tokyo](https://github.com/jeantime
 - no photographs or scanned models: `fetch.mjs` downloads PLATEAU's buildings and roads only (not their photo textures,
   bridges, street furniture or trees) and no GSI aerial photos, and `compile.mjs` keeps the LOD2 shells without their
   photo coordinates (`photos.mjs` and `meshes.mjs` are gone). The mesher colours those buildings itself.
+- `mesh/meshing.js` takes a building's wall colour and curtain wall from `b.look` when it has one (TokyoRT's far level:
+  the look the near levels' dressing gave that building, `looks.json` from tools/tokyo/city-bake.ts).
 
 ## Use
 
