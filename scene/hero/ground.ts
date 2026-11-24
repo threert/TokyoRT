@@ -10,13 +10,13 @@ import type { MeshStandardMaterial } from "@threert/scene";
 import type { Batches, V3 } from "./builder.ts";
 
 /** The compiled tiles' area kinds this reads (tools/city/shared/tileformat.js `AREA`). */
-const AREA_KIND = { ROAD: 0, CARRIAGEWAY: 1, SIDEWALK: 2 } as const;
+const AREA_KIND = { ROAD: 0, CARRIAGEWAY: 1, SIDEWALK: 2, PATH: 11 } as const;
 type Area = { kind: number; code: number; rings: number[][] };
 type Rng = { next(): number; range(a: number, b: number): number; chance(p: number): boolean };
 export type GroundMats = { patch: MeshStandardMaterial; seam: MeshStandardMaterial; gutterWet: MeshStandardMaterial; gutterDust: MeshStandardMaterial; lane: MeshStandardMaterial; stain: MeshStandardMaterial[] };
 
 /** How far over the terrain each kind of area's surface lies (the source mesher's lifts). */
-const LIFT: Record<number, number> = { [AREA_KIND.ROAD]: 0.04, [AREA_KIND.CARRIAGEWAY]: 0.06, [AREA_KIND.SIDEWALK]: 0.2 };
+const LIFT: Record<number, number> = { [AREA_KIND.ROAD]: 0.04, [AREA_KIND.CARRIAGEWAY]: 0.06, [AREA_KIND.SIDEWALK]: 0.2, [AREA_KIND.PATH]: 0.035 };
 
 function inRing(x: number, z: number, r: number[]) {
   let inside = false;
@@ -35,7 +35,9 @@ const inArea = (x: number, z: number, a: Area) => inRing(x, z, a.rings[0]) && !a
 export function dressGround(o: { areas: Area[]; box: [number, number, number, number]; terrain: (x: number, z: number) => number; B: Batches; R: Rng; M: GroundMats; place: (key: string, at: V3, facing: V3, scale?: number, spin?: number) => void }) {
   const { areas, box, terrain, B, R, M } = o;
   const [x0, z0, x1, z1] = box;
-  const roads = areas.filter((a) => a.kind === AREA_KIND.CARRIAGEWAY || a.kind === AREA_KIND.ROAD);
+  // (a lane's footpath strip too: the compiler cuts it out of the lane's road pieces, and left as the far level's
+  // concrete it read as a dark arrow down the worn lane)
+  const roads = areas.filter((a) => a.kind === AREA_KIND.CARRIAGEWAY || a.kind === AREA_KIND.ROAD || a.kind === AREA_KIND.PATH);
   const roadAt = (x: number, z: number) => roads.find((a) => inArea(x, z, a));
   // (the compiler cuts a road into pieces: its clearance is to the union's edge, its direction the longest run on road)
   const DIRS = Array.from({ length: 8 }, (_, k) => [Math.cos((k * Math.PI) / 8), Math.sin((k * Math.PI) / 8)] as [number, number]);
@@ -98,7 +100,8 @@ export function dressGround(o: { areas: Area[]; box: [number, number, number, nu
     for (let k = 0; k < ring.length; k += 2) { bx0 = Math.min(bx0, ring[k]); bx1 = Math.max(bx1, ring[k]); bz0 = Math.min(bz0, ring[k + 1]); bz1 = Math.max(bz1, ring[k + 1]); }
     const g = (x: number, z: number): V3 => [x, terrain(x, z) + lift, z];
     for (let x = Math.floor(bx0); x < bx1; x += 1) for (let z = Math.floor(bz0); z < bz1; z += 1) {
-      if (!inArea(x + 0.5, z + 0.5, a)) continue;
+      // (the outline alone, holes and all, and a cell kept if any corner is inside: the lane covered to its edges)
+      if (![[0.5, 0.5], [0, 0], [1, 0], [0, 1], [1, 1]].some(([u, v]) => inRing(x + u, z + v, ring))) continue;
       B.quad(M.lane, g(x, z), g(x, z + 1), g(x + 1, z + 1), g(x + 1, z), [0, 1, 0], [[0, 0], [0, 1], [1, 1], [1, 0]]);
     }
     counts.lanes++;
@@ -108,7 +111,7 @@ export function dressGround(o: { areas: Area[]; box: [number, number, number, nu
     for (let k = 0; k < n; k++) {
       const x = R.range(bx0, bx1), z = R.range(bz0, bz1);
       // (all over the piece: the cell that has its centroid draws all of it, its surface and its stains)
-      if (!inArea(x, z, a)) continue;
+      if (!inRing(x, z, ring)) continue;
       // (soft, not cut out: three nested rings of the lane's own surface, a shade darker at the rim to dark at the
       // heart; an outline of 16 points from two overlapping lobes, so no two are alike and none is a polygon)
       const rad = R.range(0.25, 0.8), sq = R.range(0.5, 1), rot = R.next() * Math.PI, ox = R.range(-0.4, 0.4), oz = R.range(-0.4, 0.4), lobe = R.range(0.4, 0.8);

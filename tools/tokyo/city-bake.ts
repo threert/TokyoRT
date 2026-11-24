@@ -49,7 +49,7 @@ const buildings: B[] = [], props: HeroData["props"] = [], wires: number[][] = []
 /** The tiles' road and sidewalk areas (the ground dressing's: scene/hero/ground.ts), each with its bounds. */
 type A = HeroData["areas"][number] & { bb: [number, number, number, number] };
 const roadAreas: A[] = [];
-const GROUND_KINDS = new Set([0, 1, 2]); // AREA.ROAD, CARRIAGEWAY, SIDEWALK
+const GROUND_KINDS = new Set([0, 1, 2, 11]); // AREA.ROAD, CARRIAGEWAY, SIDEWALK, PATH
 let id = 0;
 const r2 = (v: number) => Math.round(v * 100) / 100;
 for (const f of readdirSync(tilesDir).filter((f) => /^t_.*\.bin$/.test(f)).sort()) {

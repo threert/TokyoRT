@@ -90,10 +90,10 @@ fn tk_room(m: Material, i: MatIn, cell: f32, x: f32, y: f32, seed: f32, glow: u3
         let u = clamp((hx - x0) / (x1 - x0), 0.02, 0.98);
         let v = clamp(1.0 - (hy - y0) / (y1 - y0), 0.02, 0.98);
         if (bar) {
-            col = msample_color(m, i, glow, vec2<f32>((cell - 8.0 + u) / 4.0, v), 8.0).rgb;
+            col = msample_color(m, i, glow, vec2<f32>((cell - 8.0 + u) / 4.0, v), exp2(i.uvd)).rgb;
         } else {
             let c = select(7.0, 6.0, office);
-            col = msample_color(m, i, glow, vec2<f32>((c + u) / 8.0, v), 8.0).rgb;
+            col = msample_color(m, i, glow, vec2<f32>((c + u) / 8.0, v), exp2(i.uvd)).rgb;
         }
     } else if (ty < tx) {
         if (ry < 0.0) {
