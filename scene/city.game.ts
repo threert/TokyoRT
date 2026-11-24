@@ -13,7 +13,7 @@
 // Controls (pointer "look": click to capture, Esc to let go): mouse to look, W A S D to move, Space / E up, C / Q down,
 // Shift faster, the wheel scales the speed. T cycles day/dusk/night, or 1/2/3 selects a preset; M switches the
 // denoiser (MetalFX / ThreeRT; room suffix "-builtin" starts with ThreeRT's).
-import { DirectionalLight, GLTFModel, Group, Mesh, MaterialFunction, MeshStandardMaterial, readAsset, rendering, PerspectiveCamera, InstancedMesh, PlaneGeometry, Scene, SurfaceMaterial, BufferGeometry, wetLayer, type Object3D } from "@threert/scene";
+import { facadeWindows, DirectionalLight, GLTFModel, Group, Mesh, MaterialFunction, MeshStandardMaterial, readAsset, rendering, PerspectiveCamera, InstancedMesh, PlaneGeometry, Scene, SurfaceMaterial, BufferGeometry, wetLayer, type Object3D } from "@threert/scene";
 import { defineGame, type FrameContext } from "@threert/gameplay";
 import { tokyoSky } from "./sky.ts";
 import { finishMap } from "./hero/finish.ts";
@@ -458,6 +458,19 @@ function settle() {
 }
 const deg = (r: number) => +(r * 180 / Math.PI).toFixed(3);
 
+// ---------------------------------------------------------------- beyond the area
+// The city goes on past the compiled area (the user: from above 140 m the world stopped at a grey plain a kilometre
+// out): blocks and towers out to ~6 km, baked (tools/tokyo/distant.ts: one GLB, static, never streamed). Their facades
+// take the library surface's procedural windows (lit by night by the model's power); the sky's aerial perspective hazes
+// them.
+let distant: GLTFModel | null = null;
+function distantCity(night: boolean) {
+  const facade = new SurfaceMaterial({ roughness: 0.85, windows: facadeWindows({ floorHeight: 3.3, bayWidth: 3.2, windowWidth: 1.5, windowHeight: 1.4, groundHeight: 4, sill: 0.9, litChance: 0.45, brightness: 25, seed: 7 }) });
+  distant = new GLTFModel(`assets/city/glb/${AREA}-distant.glb`, { functions: { "distant facade ": facade.shader! } });
+  distant.power = night ? 1 : 0;
+  scene.add(distant);
+}
+
 // ---------------------------------------------------------------- the scene
 let tour = false;
 function collectMaterials(M: ReturnType<typeof heroMaterials>, P: ReturnType<typeof propMaterials>, night: boolean) {
@@ -499,6 +512,7 @@ function setTime(next: Time, camera: PerspectiveCamera) {
       mat.shader = midGlow.with({ ...binding.params, IsNight: night ? 1 : 0 }, binding.textures);
     }
     for (const f of farQ.values()) if (f.lights && !f.covered) f.lights.power = night ? 1 : 0;
+    if (distant) distant.power = night ? 1 : 0;
     for (const f of farQ.values()) for (const m of [f.base, f.lights]) if (m) m.customData = [night ? 0 : FAR_ROOM_DAY, 0, 0, 0];
   }
   console.log(`Tokyo · ${time} · 1 Day / 2 Dusk / 3 Night / T Cycle`);
@@ -536,6 +550,7 @@ export function sceneFor(room: string) {
   land.rotation.x = -Math.PI / 2;
   land.position.set((b.minX + b.maxX) / 2, 15, (b.minZ + b.maxZ) / 2);
   scene.add(land);
+  distantCity(night);
   // the ground of every tile: its roads in generated asphalt and pavers, wet by night
   const tex = (id: string, size: number) => { const t = finishMap(id, "color"); t.repeat = [1 / size, 1 / size]; return t; };
   const road = (id: string, size: number, puddles: number) => new SurfaceMaterial({ map: tex(id, size), normalMap: finishMap(id, "normal"), roughnessMap: finishMap(id, "rough"), worldScale: size, wet: 1, puddles: { scale: 2.5, amount: puddles }, grime: { amount: 0.3, scale: 3 } });

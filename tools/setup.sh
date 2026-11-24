@@ -25,5 +25,7 @@ node --max-old-space-size=24000 tools/tokyo/city-bake.ts --area="$AREA"
 # the far level: every tile's ground, and its buildings, props and trees by 128 m quadrant, in the
 # colours the near levels gave each building (city-bake's looks.json)
 node --max-old-space-size=8192 tools/tokyo/to-glb.ts --area="$AREA" --city --out="$AREA-far"
+# the city past the area, to the horizon (blocks and towers out to ~6 km)
+node tools/tokyo/distant.ts --area="$AREA"
 node tools/bundle.ts
 echo "done: tools/demo.sh day"
