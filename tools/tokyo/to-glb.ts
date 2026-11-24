@@ -17,6 +17,7 @@
 //   - the road's painted symbols (tools/tokyo/decals.ts): arrows, 止まれ, speed numbers, as geometry traced from the
 //     client's atlas (cutouts would cost every ray the renderer's alpha-test loop).
 // Not yet: billboards and screens: ROADMAP § 0 step 1.
+import { clipToSeams, seamsOf } from "./stitch.ts";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -246,6 +247,9 @@ const build = createHash("sha256");
 // 128 m quadrant q (0..3: +x half, then +z half) in nodes b<q> (lit windows and signs: b<q>-night / b<q>-day), p<q>
 // (lamp heads: p<q>-night / p<q>-day) and t<q>, so the scene can hide a quadrant's own when a nearer level shows it.
 const cityLevel = process.argv.includes("--city");
+/** The edges the area shares with another of the stitched city (tools/tokyo/stitch.ts). */
+const seams = cityLevel ? seamsOf(area) : [];
+if (seams.length) console.log(`${area}: seams ${seams.map((q) => `${"xyz"[q.axis]} ${q.sign > 0 ? "<=" : ">="} ${q.at}`).join(", ")}`);
 // The near levels' looks (looks.json, tools/tokyo/city-bake.ts): a building far away keeps the wall colour the dress gave
 // it near, and a tower its curtain wall (the windows a curtain grid, the wall between them its spandrels' colour).
 // Ids are the tiles' buildings in city-bake's order (the files sorted, a building's polygons each one).
@@ -287,8 +291,10 @@ async function cityTile(tile: ReturnType<typeof decodeTile>, tl: Manifest["tiles
     const tp = m.terrain.position as Float32Array;
     const uv = new Float32Array((tp.length / 3) * 2);
     for (let i = 0, j = 0; i < tp.length; i += 3, j += 2) { uv[j] = tp[i] / 4; uv[j + 1] = tp[i + 2] / 4; }
-
-    g.triangles(g.material({ name: `ground ${tag}`, color: [0.14, 0.14, 0.12], roughness: 0.92 }), tp, m.terrain.normal, uv, Uint32Array.from(m.terrain.index), "ground");
+    // (the tile's terrain runs to its edges, past the area's: where another area of the city lies, it stops at the
+    // seam, the other's taking over)
+    const c = seams.length ? clipToSeams(seams, tp, m.terrain.normal, uv, m.terrain.index) : null;
+    if (!c || c.index.length) g.triangles(g.material({ name: `ground ${tag}`, color: [0.14, 0.14, 0.12], roughness: 0.92 }), c?.pos ?? tp, c?.nor ?? m.terrain.normal, c?.uv ?? uv, c?.index ?? Uint32Array.from(m.terrain.index), "ground");
   }
   for (const [kind, a] of [["road", m.roads], ["paint", m.paint]] as const) {
     if (!a.position.length) continue;

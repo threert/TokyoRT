@@ -1,12 +1,12 @@
 <h1 align="center">TokyoRT</h1>
 
-<p align="center"><b>All of Shinjuku, streamed by level of detail around a camera you fly, path-traced in real time with <a href="https://github.com/meshy-dev/ThreeRT">ThreeRT</a>. No baked lighting.</b></p>
+<p align="center"><b>All of Shinjuku and Shibuya, streamed by level of detail around a camera you fly, path-traced in real time with <a href="https://github.com/meshy-dev/ThreeRT">ThreeRT</a>. No baked lighting.</b></p>
 
 <p align="center">
   <img src="docs/img/skyline-day.jpg" width="100%" alt="Shinjuku by day from high in the east: the low city in the foreground, the West Shinjuku skyline behind it in the haze">
 </p>
 
-Every building stands where it stands in Shinjuku: footprints, heights and uses come from Japan's open 3D city model
+Every building stands where it stands in Shinjuku and Shibuya (two compiled areas side by side, about 19 km²): footprints, heights and uses come from Japan's open 3D city model
 ([Project PLATEAU](https://www.mlit.go.jp/plateau/)), streets and power lines from OpenStreetMap, the ground from GSI.
 On top of that, rules written in TypeScript dress each building in a late-Shōwa look: tile-clad mixed-use blocks,
 aluminium sashes, balconies and penthouses, shopfronts and fascias, sign towers, neon, and at street level the bars of
@@ -28,12 +28,13 @@ repository. Nothing is lit in advance: every light, shadow, reflection and bounc
 ## Run it
 
 macOS on Apple silicon (M3 or later: hardware ray tracing), [Rust](https://rustup.rs), [Node](https://nodejs.org) 24,
-about 20 GB of disk and the system's Japanese fonts (Hiragino, drawn into the signs). Building everything takes
-a few minutes on an M3 Max, plus the engine's build and the downloads (~1.1 GB from PLATEAU, OpenStreetMap and GSI).
+about 40 GB of disk and the system's Japanese fonts (Hiragino, drawn into the signs). Building everything takes
+a quarter of an hour on an M3 Max, plus the engine's build and the downloads (~2.8 GB from PLATEAU, OpenStreetMap and
+GSI).
 
 ```bash
 git clone --recursive https://github.com/threert/TokyoRT && cd TokyoRT
-tools/setup.sh          # engine, downloads, the compiled city, its far level, every dressed cell
+tools/setup.sh          # engine, downloads, the compiled areas, their far levels, every dressed cell
 tools/demo.sh           # day; or tools/demo.sh night / dusk, and a start point: tools/demo.sh night 360,-496
 ```
 
@@ -49,6 +50,10 @@ the far level without its props and trees; with `THREERT_TEX_MAX_DIM=1024`); `-r
 mid levels' radii (140 and 480 m).
 
 `node tools/tour.ts tokyo-night-tour 90` flies a set path in the live view and prints its frame times;
+`node tools/tour.ts tokyo-day-route=drive` (or `=expressway`, `=flight`) runs one of the benchmark routes to its end:
+Meiji-dōri from Shinjuku over the areas' seam to Shibuya at 60 km/h (4.6 km), Shuto Route 3 across Shibuya on its
+elevated deck at 100 km/h (3.1 km), the line of Meiji-dōri at roof height at 150 km/h (4.6 km)
+(`tools/tokyo/routes.ts`, from the compiled road graph);
 `node tools/shot.ts` renders a still with the offline path tracer (as above).
 
 ## How it works
@@ -123,9 +128,25 @@ commits (a cell's meshes and their acceleration structures), the next thing to m
 street level's unlit signs and windows are not lights at all; switching between day and night loads the near cells
 again, the nearest first, in a second or two.
 
+The benchmark routes by day (`tools/tour.ts tokyo-day-route=…`, after the first 20 s), with both areas resident:
+
+| route | frame interval | physical footprint at the end |
+|---|---|---|
+| drive, Meiji-dōri, 60 km/h, 274 s | p50 29 ms, p95 47 ms, p99 55 ms | 43 GB |
+| expressway, Shuto Route 3, 100 km/h, 113 s | p50 32 ms, p95 40 ms, p99 46 ms | 39 GB |
+| flight at roof height, 150 km/h, 110 s | p50 30 ms, p95 39 ms, p99 48 ms | 41 GB |
+
+Shibuya resident costs the tour (which stays in Shinjuku) ~1.5 ms at p95 and p99, and 8 GB (33 GB at the end against
+25 GB with Shinjuku alone); the first frame takes 22 s (13 s). The footprint grows along a route: the memory of the
+levels left behind is not given back yet. Both are ROADMAP § 0 step 2's to bring down (≤ 1.5 ×
+one area's memory, first frame ≤ 3 s, p95 ≤ 16.7 ms).
+
 ## Limits
 
-- One area: Shinjuku (about 3.4 × 2.8 km). Shibuya and Shiba compile with the same pipeline but are not stitched in.
+- Two areas: Shinjuku and Shibuya (each about 3.4 × 2.8 km, Shibuya's north edge Shinjuku's south edge). Each is
+  compiled and baked in its own frame and placed by its origin's offset (`tools/tokyo/stitch.ts`); their terrain stops
+  at the seam. Shiba compiles with the same pipeline but is not stitched in.
+- The far level of both areas is always resident: 34 M triangles, near the renderer's 4 GiB vertex buffer.
 - No traffic or people yet.
 - For a few frames while a cell changes level both levels show (a flicker at ~140 m); the far level beyond ~480 m is
   PLATEAU's blocks as compiled.

@@ -1,4 +1,5 @@
-// Tokyo, the whole compiled area, streamed by level of detail around a first-person flying camera (ROADMAP § 0 step 2):
+// Tokyo, the compiled areas (Shinjuku and Shibuya, stitched: `AREAS`), streamed by level of detail around a first-person
+// flying camera (ROADMAP § 0 step 2):
 //   - far: the compiled tiles (tools/tokyo/to-glb.ts --city), always resident: the ground of every tile, and per 128 m
 //     quadrant its buildings, props and trees as objects of their own, hidden in place where a nearer level shows them;
 //   - L1, mid distance (within R1): each 128 m cell dressed (windows, signs, roofs, poles, trees), baked by
@@ -9,7 +10,8 @@
 // its trees, its kit pieces, then what emits, together); the level it replaces goes when it is complete.
 //
 // Room id: "tokyo-night" | "tokyo-day" | "tokyo-dusk", with "-at=x,z" or "-at=x,y,z" (where to start; the first cells
-// load with the scene), "-look=yaw,pitch" (degrees) and "-tour" (the camera flies a set path: clips and benchmarks).
+// load with the scene), "-look=yaw,pitch" (degrees), "-tour" (the camera flies a set path: clips and benchmarks) and
+// "-route=drive|expressway|flight" (a benchmark route at its speed, below).
 // Controls (pointer "look": click to capture, Esc to let go): mouse to look, W A S D to move, Space / E up, C / Q down,
 // Shift faster, the wheel scales the speed. T cycles day/dusk/night, or 1/2/3 selects a preset; M switches the
 // denoiser (MetalFX / ThreeRT; room suffix "-builtin" starts with ThreeRT's).
@@ -24,12 +26,23 @@ import { streetPropMaterials } from "./hero/streetprops.ts";
 import { MODELS } from "./hero/dress.ts";
 import { SHOP_PAGES } from "./hero/shops.ts";
 import type { V3 } from "./hero/builder.ts";
-import far from "../assets/city/glb/shinjuku-far/index.json";
-import baked from "../assets/city/baked/shinjuku/index.json";
+import shinjukuFar from "../assets/city/glb/shinjuku-far/index.json";
+import shinjukuBaked from "../assets/city/baked/shinjuku/index.json";
+import shibuyaFar from "../assets/city/glb/shibuya-far/index.json";
+import shibuyaBaked from "../assets/city/baked/shibuya/index.json";
+import ROUTES from "../assets/city/routes.json";
 
-const AREA = "shinjuku";
-/** The baked cells and their kit (tools/tokyo/city-bake.ts). */
-const BAKED = `assets/city/baked/${AREA}`;
+type FarIndex = { bounds: { minX: number; maxX: number; minZ: number; maxZ: number }; tiles: { x: number; z: number; file: string; nodes?: string[] }[] };
+/** An area: compiled and baked in its own frame (tools/city: metres east and south of its own origin), placed in the
+ *  city's (Shinjuku's) by its origin's offset (tools/tokyo/stitch.ts `offsetOf`, which the tools place the routes, the
+ *  viaducts and the city beyond by). Its cells (the baked level, tools/tokyo/city-bake.ts) and their kit; its far
+ *  tiles (their terrain stops at the seam). */
+type Area = { name: string; far: FarIndex; cells: string[]; ox: number; oz: number; kitIndex: { parts: { material: string; v: number; i: number }[]; at: number }[]; kitMade: Map<number, KitPiece | null> };
+type KitPiece = { geometry: BufferGeometry; material: MeshStandardMaterial }[];
+const area = (name: string, far: unknown, baked: unknown, ox: number, oz: number): Area =>
+  ({ name, far: far as FarIndex, cells: Object.keys((baked as { cells: Record<string, unknown> }).cells), ox, oz, kitIndex: [], kitMade: new Map() });
+const AREAS = [area("shinjuku", shinjukuFar, shinjukuBaked, 0, 0), area("shibuya", shibuyaFar, shibuyaBaked, -4.526, 3341.912)];
+const baked = (a: Area) => `assets/city/baked/${a.name}`;
 const CELL = 128;
 /** Level radii (m, from the camera to the cell's box) and the margin a level is kept beyond them. */
 let KEEP = 50;
@@ -39,8 +52,8 @@ const FRAME_TRIS = 50_000, FRAME_MS = 5, FRAME_OBJECTS = 30;
 
 /** A cell: the level it shows and the group that holds it (two for L0: a time-of-day change loads the cell again
  *  in the other one while this one shows), the night its L0 was made for, the level loading. */
-type Cell = { i: number; j: number; level: number; roots: [Group, Group, Group]; shown: Group | null; night: boolean; loading: Job | null };
-type Job = { level: number; night: boolean; path: string; meshes: { material: string; v: number; i: number; at: number; emits: boolean }[]; placements: Placement[]; kit: { k: number; n: number; at: number }[]; kitLit: { k: number; n: number; at: number }[]; off: number; k: number; p: number; q: number; root: Group };
+type Cell = { a: Area; i: number; j: number; level: number; roots: [Group, Group, Group]; shown: Group | null; night: boolean; loading: Job | null };
+type Job = { a: Area; level: number; night: boolean; path: string; meshes: { material: string; v: number; i: number; at: number; emits: boolean }[]; placements: Placement[]; kit: { k: number; n: number; at: number }[]; kitLit: { k: number; n: number; at: number }[]; off: number; k: number; p: number; q: number; root: Group };
 type Placement = { m: string; at: V3; ry: number; s: number } | { p: string; v: number; at: V3; ry: number };
 
 const engine = { readAsset };
@@ -263,7 +276,7 @@ function ascii(b: Uint8Array) {
 
 /** A cell's level: its header now, its meshes a few at a time (ranged reads: the rest of the file is not read yet). */
 function startJob(c: Cell, level: number): Job | null {
-  const path = `${BAKED}/L${level}/c_${c.i}_${c.j}.bin`;
+  const path = `${baked(c.a)}/L${level}/c_${c.i}_${c.j}.bin`;
   let n: number;
   try {
     n = new DataView(engine.readAsset(path, 0, 8)).getUint32(4, true);
@@ -288,7 +301,7 @@ function startJob(c: Cell, level: number): Job | null {
   meshes.sort((a, b) => Number(a.emits) - Number(b.emits));
   // (its kit instances after the meshes: 12 floats each)
   const kit = ((head.kit ?? []) as { k: number; n: number }[]).map((e) => { const at = off; off += e.n * 48; return { ...e, at }; });
-  return { level, night: time === "night", path, meshes, placements: head.placements, kit, kitLit: [], off: 8 + n, k: 0, p: 0, q: 0, root };
+  return { a: c.a, level, night: time === "night", path, meshes, placements: head.placements, kit, kitLit: [], off: 8 + n, k: 0, p: 0, q: 0, root };
 }
 
 /** Adds the job's next meshes and placements within the frame's budget (they show as they come: for a few frames the
@@ -332,7 +345,7 @@ function step(job: Job, budget: { tris: number; until: number; objects: number }
   // emit kept for the frame the cell's emitters go in)
   while (job.p >= job.placements.length && job.q < job.kit.length && n < budget.objects && Date.now() < budget.until) {
     const e = job.kit[job.q++];
-    const piece = kitPiece(e.k);
+    const piece = kitPiece(job.a, e.k);
     if (!piece) continue;
     if (job.level === 0 && piece.some((part) => emits(lit(part.material)))) {
       job.kitLit.push(e);
@@ -351,7 +364,7 @@ function step(job: Job, budget: { tris: number; until: number; objects: number }
 
 /** A kit entry of a cell's: its copies' frames read, an instanced mesh per material of the piece. The objects made. */
 function addKit(job: Job, e: Job["kit"][number]) {
-  const piece = kitPiece(e.k);
+  const piece = kitPiece(job.a, e.k);
   if (!piece) return 0;
   {
     const src = new Float32Array(engine.readAsset(job.path, e.at, e.n * 48));
@@ -377,31 +390,29 @@ function addKit(job: Job, e: Job["kit"][number]) {
 // ---------------------------------------------------------------- the kit: repeated elements, one mesh each
 /** The kit's pieces as the file lists them (their parts' materials and sizes, where their data is), and the geometry of
  *  those a cell has placed (one geometry each, a group per material: every copy of it in every cell shares it). */
-let kitIndex: { parts: { material: string; v: number; i: number }[]; at: number }[] = [];
-const kitMade = new Map<number, { geometry: BufferGeometry; material: MeshStandardMaterial }[] | null>();
-function loadKit() {
-  const path = `${BAKED}/kit.bin`;
+function loadKit(a: Area) {
+  const path = `${baked(a)}/kit.bin`;
   let n: number;
   try {
     n = new DataView(engine.readAsset(path, 0, 8)).getUint32(4, true);
   } catch {
-    kitIndex = [];
+    a.kitIndex = [];
     return;
   }
   const head = JSON.parse(ascii(new Uint8Array(engine.readAsset(path, 8, n)))) as { pieces: { material: string; v: number; i: number }[][] };
   let off = 8 + n;
-  kitIndex = head.pieces.map((parts) => {
+  a.kitIndex = head.pieces.map((parts) => {
     const at = off;
     for (const p of parts) off += p.v * 32 + p.i * 4;
     return { parts, at };
   });
 }
-function kitPiece(k: number) {
-  if (kitMade.has(k)) return kitMade.get(k)!;
-  const e = kitIndex[k];
-  let made: { geometry: BufferGeometry; material: MeshStandardMaterial }[] | null = null;
+function kitPiece(a: Area, k: number) {
+  if (a.kitMade.has(k)) return a.kitMade.get(k)!;
+  const e = a.kitIndex[k];
+  let made: KitPiece | null = null;
   if (e) {
-    const buf = engine.readAsset(`${BAKED}/kit.bin`, e.at, e.parts.reduce((s, p) => s + p.v * 32 + p.i * 4, 0));
+    const buf = engine.readAsset(`${baked(a)}/kit.bin`, e.at, e.parts.reduce((s, p) => s + p.v * 32 + p.i * 4, 0));
     made = [];
     let o = 0;
     for (const p of e.parts) {
@@ -417,7 +428,7 @@ function kitPiece(k: number) {
       o += p.v * 32 + p.i * 4;
     }
   }
-  kitMade.set(k, made);
+  a.kitMade.set(k, made);
   return made;
 }
 
@@ -439,10 +450,10 @@ function emits(m?: MeshStandardMaterial) {
 
 const fmod = (a: number, b: number) => ((a % b) + b) % b;
 /** The far tile and quadrant a cell lies in. */
-const farKey = (i: number, j: number) => `${Math.floor(i / 2)}_${Math.floor(j / 2)}_${fmod(i, 2) + 2 * fmod(j, 2)}`;
+const farKey = (a: Area, i: number, j: number) => `${a.name}:${Math.floor(i / 2)}_${Math.floor(j / 2)}_${fmod(i, 2) + 2 * fmod(j, 2)}`;
 
 function setFar(c: Cell) {
-  const f = farQ.get(farKey(c.i, c.j));
+  const f = farQ.get(farKey(c.a, c.i, c.j));
   if (!f) return;
   // (moved out of sight rather than hidden: an object hidden when the scene is rebuilt is left out of it, and showing it
   // again would rebuild the scene once more)
@@ -485,7 +496,7 @@ function unload(c: Cell) {
 }
 
 function boxDist(c: Cell, x: number, z: number) {
-  const x0 = c.i * CELL, z0 = c.j * CELL;
+  const x0 = c.i * CELL + c.a.ox, z0 = c.j * CELL + c.a.oz;
   const dx = Math.max(x0 - x, 0, x - (x0 + CELL)), dz = Math.max(z0 - z, 0, z - (z0 + CELL));
   return Math.hypot(dx, dz);
 }
@@ -545,6 +556,29 @@ function tourAt(t: number): { pos: V3; yaw: number } {
   return { pos: [a[1] + (b[1] - a[1]) * s, a[2] + (b[2] - a[2]) * s, a[3] + (b[3] - a[3]) * s], yaw: (a[4] + (b[4] - a[4]) * s) * (Math.PI / 180) };
 }
 
+// ---------------------------------------------------------------- the routes (benchmarks: ROADMAP § 0 step 2)
+// "-route=drive" (Meiji-dōri, Shinjuku to Shibuya over the areas' seam, 60 km/h), "-route=expressway" (Shuto Route 3
+// across Shibuya, 100 km/h), "-route=flight" (Meiji-dōri's line at roof height, 150 km/h): tools/tokyo/routes.ts.
+// The camera at the speed along the route, looking at the route ahead; at its end it stops ("tokyo: route end").
+type Route = { speed: number; look: number; pts: number[] };
+let route: Route | null = null;
+let routeEnded = false;
+function routePoint(r: Route, s: number): V3 {
+  const n = r.pts.length / 3, f = Math.min(Math.max(s / 2, 0), n - 1), k = Math.min(Math.floor(f), n - 2), u = f - k;
+  return [0, 1, 2].map((a) => r.pts[k * 3 + a] + (r.pts[k * 3 + 3 + a] - r.pts[k * 3 + a]) * u) as V3;
+}
+function routeAt(r: Route, t: number) {
+  const s = r.speed * t, end = (r.pts.length / 3 - 1) * 2;
+  const pos = routePoint(r, Math.min(s, end));
+  // (the look: at the route a little ahead, the way it bends averaged over three points; from a flight, down at the
+  // roofs)
+  const ahead = [0.5, 1, 1.5].map((k) => routePoint(r, Math.min(s, end) + r.look * k));
+  const tx = ahead.reduce((a, p) => a + p[0], 0) / 3 - pos[0], tz = ahead.reduce((a, p) => a + p[2], 0) / 3 - pos[2];
+  const ty = ahead[1][1] - pos[1];
+  const flight = r.look > 60;
+  return { pos, yaw: Math.atan2(tz, tx), pitch: Math.atan2(ty, Math.hypot(tx, tz)) - (flight ? 0.14 : 0.02), ended: s >= end };
+}
+
 // ---------------------------------------------------------------- measurement (tools/tokyo/quality.ts)
 // Events a script sends to hold the city at a pose and compare frames ("event" commands of `threert-render live`):
 //   pose {pos: [x, y, z], yaw, pitch} (degrees): the camera there (a tour stops); radii {r0, r1, keep} (m): the level
@@ -572,7 +606,7 @@ const deg = (r: number) => +(r * 180 / Math.PI).toFixed(3);
 let distant: GLTFModel | null = null;
 function distantCity(night: boolean) {
   const facade = new SurfaceMaterial({ roughness: 0.85, windows: facadeWindows({ floorHeight: 3.3, bayWidth: 3.2, windowWidth: 1.5, windowHeight: 1.4, groundHeight: 4, sill: 0.9, litChance: 0.45, brightness: 25, seed: 7 }) });
-  distant = new GLTFModel(`assets/city/glb/${AREA}-distant.glb`, { functions: { "distant facade ": facade.shader! } });
+  distant = new GLTFModel(`assets/city/glb/tokyo-distant.glb`, { functions: { "distant facade ": facade.shader! } });
   distant.power = night ? 1 : 0;
   scene.add(distant);
 }
@@ -629,6 +663,10 @@ export function sceneFor(room: string) {
   time = requested === "day" || requested === "dusk" ? requested : "night";
   const night = time === "night";
   tour = room.includes("-tour");
+  const rname = /-route=(\w+)/.exec(room)?.[1];
+  route = rname ? (ROUTES as Record<string, Route>)[rname] ?? null : null;
+  routeEnded = false;
+  if (route) console.log(`tokyo: route ${rname}, ${((route.pts.length / 3 - 1) * 2 / 1000).toFixed(2)} km at ${(route.speed * 3.6).toFixed(0)} km/h, ${((route.pts.length / 3 - 1) * 2 / route.speed).toFixed(1)} s`);
   // "-lowmem": for a GPU of 8 GB (an RTX laptop's): the mid level to 320 m, the far level without its props and trees
   // (18 % of the resident acceleration structures; past a few hundred metres they are a pixel or less)
   const lowmem = room.includes("-lowmem");
@@ -645,25 +683,28 @@ export function sceneFor(room: string) {
   farQ.clear();
   dayOf.clear();
   midOf.clear();
-  kitMade.clear();
+  for (const a of AREAS) a.kitMade.clear();
   retiring.length = 0;
   scene = new Scene();
   sun = new DirectionalLight(0xfff4e8, 100000);
   scene.add(sun);
   scene.environment = tokyoSky(sun, { dynamic: true });
-  const b = far.bounds;
+  const b = AREAS[0].far.bounds;
   const land = new Mesh(new PlaneGeometry(200000, 200000), new MeshStandardMaterial({ color: 0x3b3a36, roughness: 0.95 }));
   land.rotation.x = -Math.PI / 2;
-  land.position.set((b.minX + b.maxX) / 2, 15, (b.minZ + b.maxZ) / 2);
+  // (below the lowest ground of the areas: Shibuya's valley, 8 m)
+  land.position.set((b.minX + b.maxX) / 2, 7, (b.minZ + b.maxZ) / 2);
   scene.add(land);
   distantCity(night);
   // the ground of every tile: its roads in generated asphalt and pavers, wet by night
   const tex = (id: string, size: number) => { const t = finishMap(id, "color"); t.repeat = [1 / size, 1 / size]; return t; };
   const road = (id: string, size: number, puddles: number) => new SurfaceMaterial({ map: tex(id, size), normalMap: finishMap(id, "normal"), roughnessMap: finishMap(id, "rough"), worldScale: size, wet: 1, puddles: { scale: 2.5, amount: puddles }, grime: { amount: 0.3, scale: 3 } });
   const functions = { "road 0 ": road("asphalt", 3.5, 0.2).shader!, "road 1 ": road("pavers", 1.6, 0.12).shader!, "road 2 ": foliage, "road 3 ": road("concrete-worn", 2.5, 0.12).shader!, paint: wetLayer({ puddles: 0.4 }) };
-  for (const t of far.tiles) {
-    const uri = `assets/city/glb/${AREA}-far/${t.file}`;
-    scene.add(new GLTFModel(uri, { nodes: ["ground"], functions }));
+  for (const a of AREAS) for (const t of a.far.tiles) {
+    const uri = `assets/city/glb/${a.name}-far/${t.file}`;
+    const ground = new GLTFModel(uri, { nodes: ["ground"], functions });
+    ground.position.set(a.ox, 0, a.oz);
+    scene.add(ground);
     const has = new Set((t as { nodes?: string[] }).nodes ?? []);
     for (let q = 0; q < 4; q++) {
       // (only the nodes the tile has: a model of none draws nothing and cannot be hidden in place)
@@ -673,16 +714,19 @@ export function sceneFor(room: string) {
         const m = new GLTFModel(uri, { nodes, functions: lights ? { "window lit far ": farWindows, "signs night ": farSigns } : { "window glass": farRooms } });
         if (lights && !night) m.power = 0;
         m.customData = [night ? 0 : FAR_ROOM_DAY, 0, 0, 0];
+        m.position.set(a.ox, 0, a.oz);
         scene.add(m);
         return m;
       };
-      farQ.set(`${t.x}_${t.z}_${q}`, {
+      farQ.set(`${a.name}:${t.x}_${t.z}_${q}`, {
         covered: false,
         base: model(lowmem ? [`b${q}`] : [`b${q}`, `p${q}`, `t${q}`]),
         lights: model([`b${q}-night`, `p${q}-night`], true),
       });
     }
   }
+  // the Shuto expressway's elevated decks (tools/tokyo/viaducts.ts: the compiled city has the road's level, no structure)
+  scene.add(new GLTFModel("assets/city/glb/tokyo-viaducts.glb", { functions }));
   // the library: every material and model the baked cells use, in the scene from the start (so cells add in place)
   lib = collectMaterials(heroMaterials(true), propMaterials(true), true);
   const daylight = collectMaterials(heroMaterials(false), propMaterials(false), false);
@@ -733,7 +777,7 @@ export function sceneFor(room: string) {
     scene.add(s);
   }
   // the kit's index, and an instanced mesh from the start (the scene's first one rebuilds it: not while streaming)
-  loadKit();
+  for (const a of AREAS) loadKit(a);
   const firstCopies = new InstancedMesh(swatch, lib.values().next().value!, 1);
   firstCopies.position.set(b.minX, -55, b.minZ);
   scene.add(firstCopies);
@@ -742,12 +786,12 @@ export function sceneFor(room: string) {
     g.position.set(b.minX, -60 - Object.keys(MODELS).indexOf(key) * 5, b.minZ);
     scene.add(g);
   }
-  // the cells of the baked area
-  for (const key of Object.keys((baked as { cells: Record<string, unknown> }).cells)) {
+  // the cells of the baked areas (each cell's groups where its area lies)
+  for (const a of AREAS) for (const key of a.cells) {
     const [i, j] = key.split("_").map(Number);
     const roots: [Group, Group, Group] = [new Group(), new Group(), new Group()];
-    roots.forEach((g, l) => { g.name = `cell ${i} ${j} ${["L0", "L1", "L0b"][l]}`; scene.add(g); });
-    cells.set(key, { i, j, level: -1, roots, shown: null, night: time === "night", loading: null });
+    roots.forEach((g, l) => { g.name = `cell ${a.name} ${i} ${j} ${["L0", "L1", "L0b"][l]}`; g.position.set(a.ox, 0, a.oz); scene.add(g); });
+    cells.set(`${a.name}:${key}`, { a, i, j, level: -1, roots, shown: null, night: time === "night", loading: null });
   }
   // the camera: Golden Gai's middle alley by default
   // ("-at=x,z" at street level, "-at=x,y,z" anywhere)
@@ -755,6 +799,12 @@ export function sceneFor(room: string) {
   cam.pos = [sx, sy, sz];
   cam.yaw = (look ? Number(look[1]) : 22) * Math.PI / 180;
   cam.pitch = look ? Math.max(-1.5, Math.min(1.5, Number(look[2]) * Math.PI / 180)) : 0;
+  if (route) {
+    const r = routeAt(route, 0);
+    cam.pos = r.pos;
+    cam.yaw = r.yaw;
+    cam.pitch = r.pitch;
+  }
   const camera = new PerspectiveCamera(70, 16 / 9, 0.05, 30000);
   camera.name = "camera";
   aim(camera);
@@ -768,7 +818,7 @@ export function sceneFor(room: string) {
     if (!busy) break;
     stream(cam.pos[0], cam.pos[1], cam.pos[2], budget);
   }
-  console.log(`city: ${far.tiles.length} far tiles, ${cells.size} cells, ${lib.size} materials; started with ${[...cells.values()].filter((c) => c.level === 0).length} cells at L0, ${[...cells.values()].filter((c) => c.level === 1).length} at L1`);
+  console.log(`city: ${AREAS.map((a) => a.name).join(" + ")}: ${AREAS.reduce((s, a) => s + a.far.tiles.length, 0)} far tiles, ${cells.size} cells, ${lib.size} materials; started with ${[...cells.values()].filter((c) => c.level === 0).length} cells at L0, ${[...cells.values()].filter((c) => c.level === 1).length} at L1`);
   return { scene, camera, options: { name: `tokyo-city-${time}`, width: 1280, height: 720 } };
 }
 
@@ -789,6 +839,7 @@ export default defineGame<Record<string, never>>({
     cycleTime: (world) => setTime(time === "day" ? "dusk" : time === "dusk" ? "night" : "day", world.camera),
     pose: (world, ev: { pos: V3; yaw: number; pitch: number }) => {
       tour = false;
+      route = null;
       cam.pos = [...ev.pos];
       cam.yaw = ev.yaw * Math.PI / 180;
       cam.pitch = ev.pitch * Math.PI / 180;
@@ -801,6 +852,7 @@ export default defineGame<Record<string, never>>({
     },
     hold: () => {
       tour = false;
+      route = null;
       held = true;
       console.log(`tokyo: held at ${cam.pos.map((v) => +v.toFixed(3)).join(",")} look ${deg(cam.yaw)},${deg(cam.pitch)}`);
     },
@@ -815,7 +867,13 @@ export default defineGame<Record<string, never>>({
   },
   frame(f: FrameContext<Record<string, never>>) {
     const dt = f.dt;
-    if (tour) {
+    if (route) {
+      const r = routeAt(route, f.time);
+      cam.pos = r.pos;
+      cam.yaw = r.yaw;
+      cam.pitch = r.pitch;
+      if (r.ended && !routeEnded) { routeEnded = true; console.log("tokyo: route end"); }
+    } else if (tour) {
       const t = tourAt(f.time);
       cam.pos = t.pos;
       cam.yaw = t.yaw;
@@ -831,7 +889,7 @@ export default defineGame<Record<string, never>>({
       const rx = -Math.sin(cam.yaw), rz = Math.cos(cam.yaw);
       const mv = inp.move;
       const up = (inp.down("Space") || inp.down("E") ? 1 : 0) - (inp.down("C") || inp.down("Q") ? 1 : 0);
-      cam.pos = [cam.pos[0] + (fx * mv.y + rx * mv.x) * v, Math.max(18, cam.pos[1] + (fy * mv.y + up) * v), cam.pos[2] + (fz * mv.y + rz * mv.x) * v];
+      cam.pos = [cam.pos[0] + (fx * mv.y + rx * mv.x) * v, Math.max(9, cam.pos[1] + (fy * mv.y + up) * v), cam.pos[2] + (fz * mv.y + rz * mv.x) * v];
     }
     aim(f.camera);
     if (held) return;
