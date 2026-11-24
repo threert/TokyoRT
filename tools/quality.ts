@@ -1,6 +1,6 @@
 // What the levels of detail and the streaming cost in image quality: the city at fixed poses, frames compared as
 // images (mean / p99 CIEDE76, SSIM: `threert-render compare`).
-//   node tools/quality.ts [day|night] [--poses alley,towers] [--spp 128] [--tour 20,45] [--live] [--out DIR]
+//   node tools/quality.ts [day|night] [--poses alley,towers] [--spp 128] [--tour 20,45] [--live] [--swap] [--offline-off] [--out DIR]
 //
 // For each pose, the path tracer offline (tools/shot.ts's render, the cells round the pose loaded whole at the radii
 // the room id gives: converged, and the same noise where nothing changed):
@@ -10,6 +10,7 @@
 //   L0/L1   the cells at 120–160 m at L0, then at L1 (r0 160 vs 120): what a cell's switch at 140 m shows
 //   L1/far  the same with r1 520 vs 440, the switch at 480 m
 //   live    (`--live`) the live view held still there (MetalFX's denoiser where there is one) against the offline render
+//   swap    (`--swap`) the 140 m switch as it streams in the live view, frame by frame (see there)
 // For each tour second (`--tour`; a live session each: the tour flown in lockstep at 60 frames a second, then held):
 //   floor   the held frame twice (the live view's noise: a frame is 8 snapshots averaged)
 //   stream  the frame with what streaming had loaded by then, against the same pose with every cell at its level
@@ -45,6 +46,8 @@ const out = join(opt("--out") ?? join(repoRoot, "out/quality"), time);
 const W = 1280, H = 720, FOV = 70;
 /** Snapshots averaged per frame compared, and the frames between them. */
 const K = Number(opt("--average") ?? 8), GAP = 6;
+/** Frames recorded through a swap (`--swap`). */
+const SWAP_FRAMES = Number(opt("--swap-frames") ?? 40);
 mkdirSync(out, { recursive: true });
 
 // (the GPU lock while it renders: a measurement another run is timing is not skewed by these renders)
@@ -62,6 +65,9 @@ const look = (p: { pos: V3; target: V3 }) => {
 const f3 = (v: number[]) => v.map((x) => +x.toFixed(3)).join(",");
 
 type Metric = { mean_delta_e: number; p99_delta_e: number; ssim: number };
+function compareQuiet(a: string, c: string): Metric {
+  return JSON.parse(execFileSync(bin, ["compare", a, c]).toString());
+}
 function compare(a: string, c: string, sheet: string): Metric {
   return JSON.parse(execFileSync(bin, ["compare", a, c, "--sheet", sheet]).toString());
 }
@@ -116,17 +122,50 @@ for (const name of poses) {
   const p = POSES[name];
   if (!p) throw new Error(`no pose ${name} (${Object.keys(POSES).join(", ")})`);
   const f = (s: string) => join(out, `${name}-${s}.png`);
-  const base = offline(p, "", f("base"));
-  add(name, "floor", base, offline(p, "", f("again")));
-  add(name, "detail", offline(p, "-r0=280-r1=960", f("full")), base);
-  add(name, "L0/L1", offline(p, "-r0=160", f("r0-160")), offline(p, "-r0=120", f("r0-120")));
-  add(name, "L1/far", offline(p, "-r1=520", f("r1-520")), offline(p, "-r1=440", f("r1-440")));
-  if (argv.includes("--live")) {
+  const offlineToo = !argv.includes("--offline-off");
+  const base = offlineToo ? offline(p, "", f("base")) : "";
+  if (offlineToo) {
+    add(name, "floor", base, offline(p, "", f("again")));
+    add(name, "detail", offline(p, "-r0=280-r1=960", f("full")), base);
+    add(name, "L0/L1", offline(p, "-r0=160", f("r0-160")), offline(p, "-r0=120", f("r0-120")));
+    add(name, "L1/far", offline(p, "-r1=520", f("r1-520")), offline(p, "-r1=440", f("r1-440")));
+  }
+  if (argv.includes("--live") && offlineToo) {
     const { yaw, pitch } = look(p);
     const live = await session(`tokyo-${time}-at=${f3(p.pos)}-look=${f3([yaw, pitch])}`);
     const held = await shot(live, f("live"), [["pose", { pos: p.pos, yaw, pitch }], ["settle"]]);
     await live.quit();
     add(name, "live", base, held);
+  }
+  if (argv.includes("--swap")) {
+    // The 140 m switch in the live view, as it streams (the normal frame budget), the camera still: each frame through it
+    // against the view before and the view after (both settled, 8 snapshots averaged). A frame that is neither
+    // (both levels drawn at once, a level half in, the history thrown away) is what flickers: its ΔE to the nearer of
+    // the two, the worst over the swap, against a single frame's own noise (the same frame settled).
+    const { yaw, pitch } = look(p);
+    const live = await session(`tokyo-${time}-at=${f3(p.pos)}-look=${f3([yaw, pitch])}`);
+    const from = await shot(live, f("swap-from"), [["pose", { pos: p.pos, yaw, pitch }], ["radii", { r0: 120, r1: 480, keep: 0 }], ["settle"]]);
+    const frames: string[] = [];
+    live.send({ cmd: "event", type: "radii", payload: { r0: 160 } });
+    for (let k = 0; k < SWAP_FRAMES; k++) {
+      const path = f(`swap-${String(k).padStart(2, "0")}`);
+      live.send({ cmd: "frames", n: 1, snapshot: path });
+      await live.wait((l) => l.includes("live: snapshot") && l.includes(path), 600_000);
+      frames.push(path);
+    }
+    const to = await shot(live, f("swap-to"), [["settle"]]);
+    const single = f("swap-single");
+    live.send({ cmd: "frames", n: 1, snapshot: single });
+    await live.wait((l) => l.includes("live: snapshot") && l.includes(single), 600_000);
+    await live.quit();
+    const de = (a: string, b: string) => compareQuiet(a, b);
+    const near = frames.map((x) => { const a = de(from, x), b = de(to, x); return a.mean_delta_e <= b.mean_delta_e ? { m: a, ref: from } : { m: b, ref: to }; });
+    const k = near.reduce((w, e, i) => (e.m.mean_delta_e > near[w].m.mean_delta_e ? i : w), 0);
+    add(name, "swap floor", to, single);
+    const floor = rows.at(-1)!.m.mean_delta_e;
+    add(name, `swap (worst frame ${k})`, near[k].ref, frames[k]);
+    rows.at(-1)!.what += `; ${near.filter((e) => e.m.mean_delta_e > floor + 0.1).length} of ${SWAP_FRAMES} frames over the floor + 0.1`;
+    for (const x of frames) rmSync(x);
   }
 }
 
