@@ -32,7 +32,7 @@ const AREA = "shinjuku";
 const BAKED = `assets/city/baked/${AREA}`;
 const CELL = 128;
 /** Level radii (m, from the camera to the cell's box) and the margin a level is kept beyond them. */
-const KEEP = 50;
+let KEEP = 50;
 let R0 = 140, R1 = 480;
 /** Triangles added in place per frame (the commit pays ~80 ns a triangle), and the frame script's time for it (ms). */
 const FRAME_TRIS = 50_000, FRAME_MS = 5, FRAME_OBJECTS = 30;
@@ -425,6 +425,25 @@ function tourAt(t: number): { pos: V3; yaw: number } {
   return { pos: [a[1] + (b[1] - a[1]) * s, a[2] + (b[2] - a[2]) * s, a[3] + (b[3] - a[3]) * s], yaw: (a[4] + (b[4] - a[4]) * s) * (Math.PI / 180) };
 }
 
+// ---------------------------------------------------------------- measurement (tools/tokyo/quality.ts)
+// Events a script sends to hold the city at a pose and compare frames ("event" commands of `threert-render live`):
+//   pose {pos: [x, y, z], yaw, pitch} (degrees): the camera there (a tour stops); radii {r0, r1, keep} (m): the level
+//   radii and their hysteresis; hold: the camera and the streaming stop where they are (a tour's pose is logged);
+//   settle: every cell to its level now, whole (logged "tokyo: settled" when done).
+let held = false;
+function settle() {
+  for (let n = 0; n < 100_000; n++) {
+    let busy = false;
+    for (const c of cells.values()) if (c.loading || (want(c, ...cam.pos) >= 0 && want(c, ...cam.pos) !== c.level) || (c.level >= 0 && want(c, ...cam.pos) < 0)) busy = true;
+    if (!busy) break;
+    stream(cam.pos[0], cam.pos[1], cam.pos[2], { tris: Infinity, until: Infinity, objects: Infinity });
+  }
+  retire(Infinity);
+  const n = [0, 1].map((l) => [...cells.values()].filter((c) => c.level === l).length);
+  console.log(`tokyo: settled with ${n[0]} cells at L0, ${n[1]} at L1 (r0 ${R0}, r1 ${R1}, keep ${KEEP})`);
+}
+const deg = (r: number) => +(r * 180 / Math.PI).toFixed(3);
+
 // ---------------------------------------------------------------- the scene
 let tour = false;
 function collectMaterials(M: ReturnType<typeof heroMaterials>, P: ReturnType<typeof propMaterials>, night: boolean) {
@@ -631,6 +650,27 @@ export default defineGame<Record<string, never>>({
     dusk: (world) => setTime("dusk", world.camera),
     night: (world) => setTime("night", world.camera),
     cycleTime: (world) => setTime(time === "day" ? "dusk" : time === "dusk" ? "night" : "day", world.camera),
+    pose: (world, ev: { pos: V3; yaw: number; pitch: number }) => {
+      tour = false;
+      cam.pos = [...ev.pos];
+      cam.yaw = ev.yaw * Math.PI / 180;
+      cam.pitch = ev.pitch * Math.PI / 180;
+      aim(world.camera);
+    },
+    radii: (_world, ev: { r0?: number; r1?: number; keep?: number }) => {
+      if (ev.r0 !== undefined) R0 = ev.r0;
+      if (ev.r1 !== undefined) R1 = ev.r1;
+      if (ev.keep !== undefined) KEEP = ev.keep;
+    },
+    hold: () => {
+      tour = false;
+      held = true;
+      console.log(`tokyo: held at ${cam.pos.map((v) => +v.toFixed(3)).join(",")} look ${deg(cam.yaw)},${deg(cam.pitch)}`);
+    },
+    settle: () => {
+      held = false;
+      settle();
+    },
   },
   pointer: "look",
   setup(ctx) {
@@ -657,6 +697,7 @@ export default defineGame<Record<string, never>>({
       cam.pos = [cam.pos[0] + (fx * mv.y + rx * mv.x) * v, Math.max(18, cam.pos[1] + (fy * mv.y + up) * v), cam.pos[2] + (fz * mv.y + rz * mv.x) * v];
     }
     aim(f.camera);
+    if (held) return;
     retire(250);
     stream(cam.pos[0], cam.pos[1], cam.pos[2], { tris: FRAME_TRIS, until: Date.now() + FRAME_MS, objects: FRAME_OBJECTS });
   },
