@@ -7,14 +7,13 @@
 // All of it lies a few millimetres over the far level's road surface (the source mesher lifts a carriageway 6 cm
 // over the terrain, a road 4 cm, a sidewalk 20 cm), as decals in the cell's meshes.
 import type { MeshStandardMaterial } from "@threert/scene";
-import earcut from "earcut";
 import type { Batches, V3 } from "./builder.ts";
 
 /** The compiled tiles' area kinds this reads (tools/city/shared/tileformat.js `AREA`). */
 const AREA_KIND = { ROAD: 0, CARRIAGEWAY: 1, SIDEWALK: 2 } as const;
 type Area = { kind: number; code: number; rings: number[][] };
 type Rng = { next(): number; range(a: number, b: number): number; chance(p: number): boolean };
-export type GroundMats = { patch: MeshStandardMaterial; seam: MeshStandardMaterial; gutterWet: MeshStandardMaterial; gutterDust: MeshStandardMaterial; lane: MeshStandardMaterial };
+export type GroundMats = { patch: MeshStandardMaterial; seam: MeshStandardMaterial; gutterWet: MeshStandardMaterial; gutterDust: MeshStandardMaterial; lane: MeshStandardMaterial; stain: MeshStandardMaterial[] };
 
 /** How far over the terrain each kind of area's surface lies (the source mesher's lifts). */
 const LIFT: Record<number, number> = { [AREA_KIND.ROAD]: 0.04, [AREA_KIND.CARRIAGEWAY]: 0.06, [AREA_KIND.SIDEWALK]: 0.2 };
@@ -75,11 +74,11 @@ export function dressGround(o: { areas: Area[]; box: [number, number, number, nu
   };
   /** A repair: its fresher asphalt and the dark sealed seam round it. */
   const repair = (cx: number, cz: number, dir: [number, number], len: number, wid: number, lift: number) => {
-    drape(M.patch, cx, cz, dir, len, wid, lift + 0.006);
+    drape(M.patch, cx, cz, dir, len, wid, lift + 0.016);
     const [ux, uz] = dir, vx = -uz, vz = ux, s = 0.04;
     for (const side of [-1, 1]) {
-      drape(M.seam, cx + vx * side * wid / 2, cz + vz * side * wid / 2, dir, len + s, s, lift + 0.008);
-      drape(M.seam, cx + ux * side * len / 2, cz + uz * side * len / 2, dir, s, wid + s, lift + 0.008);
+      drape(M.seam, cx + vx * side * wid / 2, cz + vz * side * wid / 2, dir, len + s, s, lift + 0.018);
+      drape(M.seam, cx + ux * side * len / 2, cz + uz * side * len / 2, dir, s, wid + s, lift + 0.018);
     }
   };
   const inside = (x: number, z: number) => x >= x0 && x < x1 && z >= z0 && z < z1;
@@ -92,27 +91,43 @@ export function dressGround(o: { areas: Area[]; box: [number, number, number, nu
     for (let k = 0; k < ring.length; k += 2) { cx += ring[k]; cz += ring[k + 1]; }
     cx /= ring.length / 2; cz /= ring.length / 2;
     if (!inside(cx, cz) || !inArea(cx, cz, a) || across(cx, cz, along(cx, cz)) > 3) continue;
-    const flat: number[] = [], holes: number[] = [];
-    for (const [k, r] of a.rings.entries()) { if (k) holes.push(flat.length / 2); flat.push(...r); }
-    const idx = earcut(flat, holes, 2), lift = (LIFT[a.kind] ?? 0.06) + 0.002;
-    const at = (v: number): V3 => [flat[v * 2], terrain(flat[v * 2], flat[v * 2 + 1]) + lift, flat[v * 2 + 1]];
-    for (let k = 0; k < idx.length; k += 3) B.tri(M.lane, at(idx[k]), at(idx[k + 2]), at(idx[k + 1]), [0, 1, 0]);
+    // (draped on the terrain in 1 m cells inside the piece: triangulated at its outline's corners alone, the far level's
+    // road, draped finer, came through it where the ground bulges)
+    const lift = (LIFT[a.kind] ?? 0.06) + 0.01;
+    let bx0 = Infinity, bz0 = Infinity, bx1 = -Infinity, bz1 = -Infinity;
+    for (let k = 0; k < ring.length; k += 2) { bx0 = Math.min(bx0, ring[k]); bx1 = Math.max(bx1, ring[k]); bz0 = Math.min(bz0, ring[k + 1]); bz1 = Math.max(bz1, ring[k + 1]); }
+    const g = (x: number, z: number): V3 => [x, terrain(x, z) + lift, z];
+    for (let x = Math.floor(bx0); x < bx1; x += 1) for (let z = Math.floor(bz0); z < bz1; z += 1) {
+      if (!inArea(x + 0.5, z + 0.5, a)) continue;
+      B.quad(M.lane, g(x, z), g(x, z + 1), g(x + 1, z + 1), g(x + 1, z), [0, 1, 0], [[0, 0], [0, 1], [1, 1], [1, 0]]);
+    }
     counts.lanes++;
     // on it, what a lane collects: stains (oil, spilt drink, water that stood), dark on the worn grey; a manhole in
     // its middle on some
-    let bx0 = Infinity, bz0 = Infinity, bx1 = -Infinity, bz1 = -Infinity;
-    for (let k = 0; k < ring.length; k += 2) { bx0 = Math.min(bx0, ring[k]); bx1 = Math.max(bx1, ring[k]); bz0 = Math.min(bz0, ring[k + 1]); bz1 = Math.max(bz1, ring[k + 1]); }
     const n = Math.ceil(((bx1 - bx0) * (bz1 - bz0)) / 8);
     for (let k = 0; k < n; k++) {
       const x = R.range(bx0, bx1), z = R.range(bz0, bz1);
-      if (!inside(x, z) || !inArea(x, z, a)) continue;
-      const rad = R.range(0.2, 0.7), y = terrain(x, z) + lift + 0.003, sq = R.range(0.5, 1);
-      const pts: V3[] = Array.from({ length: 9 }, (_, q) => { const an = (q / 9) * Math.PI * 2, rr = rad * R.range(0.6, 1.2); return [x + Math.cos(an) * rr, y, z + Math.sin(an) * rr * sq]; });
-      B.polygon(M.patch, pts, Array.from({ length: 7 }, (_, q) => [0, q + 1, q + 2]).flat(), [0, 1, 0]);
+      // (all over the piece: the cell that has its centroid draws all of it, its surface and its stains)
+      if (!inArea(x, z, a)) continue;
+      // (soft, not cut out: three nested rings of the lane's own surface, a shade darker at the rim to dark at the
+      // heart; an outline of 16 points from two overlapping lobes, so no two are alike and none is a polygon)
+      const rad = R.range(0.25, 0.8), sq = R.range(0.5, 1), rot = R.next() * Math.PI, ox = R.range(-0.4, 0.4), oz = R.range(-0.4, 0.4), lobe = R.range(0.4, 0.8);
+      const wob = Array.from({ length: 16 }, () => R.range(0.8, 1.15));
+      const outline = (scale: number, y: number): V3[] => Array.from({ length: 16 }, (_, q) => {
+        const an = (q / 16) * Math.PI * 2, c = Math.cos(an), sn = Math.sin(an);
+        // (the farther of two ellipses' edges along the ray: a blob of two lobes)
+        const e1 = 1, e2 = lobe * Math.max(0, 1 + (c * ox + sn * oz) / rad);
+        const rr = rad * scale * Math.max(e1, e2) * wob[q], u = c * rr, v = sn * rr * sq;
+        const px = x + u * Math.cos(rot) - v * Math.sin(rot), pz = z + u * Math.sin(rot) + v * Math.cos(rot);
+        return [px, terrain(px, pz) + y, pz];
+      });
+      const fan = Array.from({ length: 14 }, (_, q) => [0, q + 1, q + 2]).flat();
+      const base = lift;
+      [[1, M.stain[0], 0.002], [0.72, M.stain[1], 0.003], [0.45, M.stain[2], 0.004]].forEach(([sc, m, dy]) => B.polygon(m as MeshStandardMaterial, outline(sc as number, base + (dy as number)), fan, [0, 1, 0]));
       counts.stains = (counts.stains ?? 0) + 1;
     }
     if (R.chance(0.5) && clear(cx, cz, 0.7)) {
-      o.place("manhole", [cx, terrain(cx, cz) + lift + 0.005, cz], [0, 0, 1], 1, R.next() * 6);
+      o.place("manhole", [cx, terrain(cx, cz) + lift + 0.006, cz], [0, 0, 1], 1, R.next() * 6);
       counts.manholes++;
     }
   }

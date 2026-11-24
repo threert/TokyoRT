@@ -216,6 +216,8 @@ export function heroMaterials(night: boolean) {
     roadPatch: groundFinish("asphalt", 3.5, [0.15, 0.15, 0.16], "road repair", 0.9),
     footGrime: groundFinish("asphalt", 3.5, [0.2, 0.18, 0.16], "wall foot grime", 0.6),
     laneWorn: groundFinish("asphalt-fresh", 3, [1.0, 0.98, 0.95], "lane worn asphalt"),
+    // (a stain on a lane, rim to heart: the lane's own surface, darker in three steps)
+    laneStains: [[0.78, 0.76, 0.73], [0.55, 0.52, 0.48], [0.34, 0.31, 0.28]].map((t, i) => groundFinish("asphalt-fresh", 3, t as [number, number, number], `lane stain ${i}`)),
     roadSeam: new MeshStandardMaterial({ name: "road seam", color: [0.02, 0.02, 0.022], roughness: 0.75 }),
     gutterWet: groundFinish("asphalt", 3.5, [0.42, 0.41, 0.4], "kerb gutter line", 0.55),
     gutterDust: groundFinish("concrete-worn", 2.5, [0.92, 0.87, 0.78], "kerb grit"),

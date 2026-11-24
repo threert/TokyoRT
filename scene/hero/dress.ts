@@ -1475,7 +1475,7 @@ export function dressDistrict(data: HeroData, M: Mats, night: boolean, seed = 11
   // a baked cell's streets at street level: manholes, repairs and their seams, the kerbs' gutter lines (hero/ground.ts)
   if (ab.cell && ab.full) {
     R = rng(hashSeed(seed, -3, ...ab.cell));
-    const g = dressGround({ areas: data.areas, box: ab.cell, terrain, B, R, M: { patch: M.roadPatch, seam: M.roadSeam, gutterWet: M.gutterWet, gutterDust: M.gutterDust, lane: M.laneWorn }, place });
+    const g = dressGround({ areas: data.areas, box: ab.cell, terrain, B, R, M: { patch: M.roadPatch, seam: M.roadSeam, gutterWet: M.gutterWet, gutterDust: M.gutterDust, lane: M.laneWorn, stain: M.laneStains }, place });
     counts.manholes = (counts.manholes ?? 0) + g.manholes;
     counts["road repairs"] = (counts["road repairs"] ?? 0) + g.patches + g.trenches;
     counts.kerbs = (counts.kerbs ?? 0) + g.kerbs;
