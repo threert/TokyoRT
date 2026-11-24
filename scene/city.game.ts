@@ -67,11 +67,14 @@ fn tk_room(m: Material, i: MatIn, cell: f32, x: f32, y: f32, seed: f32, glow: u3
     let ry = dot(rd, i.b);
     let rz = max(dot(i.view, nf), 0.05);
     // the room: 2 windows wide, its floor 0.7 window-heights under the sill, 2.2 deep (window heights)
-    let x0 = -0.5 - seed * 0.4;
-    let x1 = 1.5 + fract(seed * 7.3) * 0.4;
-    let y0 = -0.7;
-    let y1 = 1.35;
-    let D = 1.8 + fract(seed * 3.1) * 1.0;
+    let bar0 = cell > 7.5;
+    // (a bar's or a shop's front is a whole storey with its counter just behind: the back wall close, filling the glass,
+    // dark wood round it; a home's room 2-3 windows deep)
+    let x0 = select(-0.5 - seed * 0.4, -0.25 - seed * 0.15, bar0);
+    let x1 = select(1.5 + fract(seed * 7.3) * 0.4, 1.25 + fract(seed * 7.3) * 0.15, bar0);
+    let y0 = select(-0.7, -0.05, bar0);
+    let y1 = select(1.35, 1.15, bar0);
+    let D = select(1.8 + fract(seed * 3.1) * 1.0, 0.35 + fract(seed * 3.1) * 0.2, bar0);
     let tx = select((x0 - x) / min(rx, -1e-4), (x1 - x) / max(rx, 1e-4), rx > 0.0);
     let ty = select((y0 - y) / min(ry, -1e-4), (y1 - y) / max(ry, 1e-4), ry > 0.0);
     let tz = D / rz;
@@ -97,7 +100,7 @@ fn tk_room(m: Material, i: MatIn, cell: f32, x: f32, y: f32, seed: f32, glow: u3
             // the floor: boards (a home, a bar's darker), grey carpet tiles (an office)
             let board = 0.85 + 0.15 * step(0.5, fract(hz * 2.6 + floor(hx * 4.0) * 0.37));
             col = select(vec3<f32>(0.32, 0.22, 0.14) * board, vec3<f32>(0.3, 0.31, 0.32), office);
-            if (bar) { col = vec3<f32>(0.16, 0.11, 0.08) * board; }
+            if (bar) { col = vec3<f32>(0.08, 0.055, 0.04) * board; }
         } else {
             // the ceiling: an office's light panels; a bar's dark boards and a warm lamp
             let panel = office && fract(hz * 1.2) < 0.35 && fract(hx * 1.5) < 0.6;
@@ -109,10 +112,11 @@ fn tk_room(m: Material, i: MatIn, cell: f32, x: f32, y: f32, seed: f32, glow: u3
         }
     } else {
         col = select(vec3<f32>(0.74, 0.69, 0.6), vec3<f32>(0.7, 0.72, 0.72), office) * (0.85 + 0.15 * fract(seed * 11.0));
-        if (bar) { col = vec3<f32>(0.42, 0.3, 0.2) * (0.8 + 0.3 * fract(seed * 11.0)); }
+        if (bar) { col = vec3<f32>(0.16, 0.1, 0.06) * (0.8 + 0.3 * fract(seed * 11.0)); }
     }
-    // furniture standing in the room: a low card (a sofa, a desk, a counter) and a tall one (a shelf, a wardrobe)
-    for (var k = 0; k < 2; k++) {
+    // furniture standing in the room: a low card (a sofa, a desk, a counter) and a tall one (a shelf, a wardrobe); not in
+    // a bar or a shop (its picture has its counter and its people)
+    for (var k = 0; k < select(2, 0, bar); k++) {
         let kf = f32(k);
         let zc = D * (0.35 + 0.3 * fract(seed * (5.7 + kf * 3.3)));
         let tc = zc / rz;
@@ -172,7 +176,7 @@ const midGlow = new MaterialFunction("TokyoMidGlow", {
 /** A room's brightness by day (nits): homes and offices with the lights off, bars and shops with theirs on. Dimmer than
  *  the street, as a room is: the glass's reflection of the street and the sky leads, the room shows through it where it
  *  is lit (at 1300 a window read as a flat, light picture, its reflection lost). */
-const ROOM_DAY = { room: 300, bar: 600, shop: 800 };
+const ROOM_DAY = { room: 300, bar: 1200, shop: 2000 };
 // The far tile already has each window, sign and lamp in its night nodes. Keep that geometry resident.
 // Unlit glTF materials carry their authored glow as base colour. Restore their daylight surfaces when power is off.
 // By day a far window is the pane in front of a room, as the near levels' windows are: the room at the brightness it has
