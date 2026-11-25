@@ -1,6 +1,6 @@
 // What the levels of detail and the streaming cost in image quality: the city at fixed poses, frames compared as
 // images (mean / p99 CIEDE76, SSIM: `threert-render compare`).
-//   node tools/quality.ts [day|night] [--poses alley,towers] [--spp 128] [--tour 20,45] [--live] [--swap] [--offline-off] [--out DIR]
+//   node tools/quality.ts [day|dusk|night|afternoon] [--clock HH:MM] [--poses alley,towers] [--spp 128] [--tour 20,45] [--live] [--swap] [--offline-off] [--out DIR]
 //
 // For each pose, the path tracer offline (tools/shot.ts's render, the cells round the pose loaded whole at the radii
 // the room id gives: converged, and the same noise where nothing changed):
@@ -14,6 +14,8 @@
 // For each tour second (`--tour`; a live session each: the tour flown in lockstep at 60 frames a second, then held):
 //   floor   the held frame twice (the live view's noise: a frame is 8 snapshots averaged)
 //   stream  the frame with what streaming had loaded by then, against the same pose with every cell at its level
+// "afternoon" is the day preset at 15:30 (6h's late-afternoon sun: the room id's "-clock=15:30", scene/clock.ts);
+// "--clock HH:MM" sets another time of the day preset (out/quality/day-HHMM).
 // The roadmap's bar (ROADMAP § 0): ΔE ≤ 1.0 and SSIM ≥ 0.98. Writes <out>/<time>/report.{md,json} and a sheet per
 // comparison (the two frames and the ΔE heat map, side by side).
 import { execFileSync } from "node:child_process";
@@ -37,15 +39,27 @@ const POSES: Record<string, { pos: V3; target: V3 }> = {
   avenue: { pos: [-470, 42.4, 40], target: [-620, 75, 160] },
   towers: { pos: [-350, 170, 80], target: [-800, 110, 170] },
   skyline: { pos: [950, 240, -250], target: [-500, 110, -150] },
+  // ROADMAP 6h's ordinary street, judged beside its photograph in late-afternoon sun (`afternoon`): the top candidate
+  // of tools/tokyo/street-ref.ts (Shinjuku's straight minor roads ranked for the photograph's kind of stretch: a narrow
+  // two-lane residential street, no kerbed footway, poles along it, low flats on both sides, and the 15:30 sun raking
+  // along it from behind the camera), an unnamed residential street near 35.6956 N, 139.7147 E
+  "street-ref": { pos: [1281.5, 36.54, -660.66], target: [1311.25, 38.04, -700.84] },
 };
 
 const argv = process.argv.slice(2);
 const opt = (k: string) => { const i = argv.indexOf(k); return i >= 0 ? argv[i + 1] : undefined; };
-const time = (argv[0] && !argv[0].startsWith("--") ? argv[0] : "day") + (argv.includes("--builtin") ? "-builtin" : "");
-const poses = (opt("--poses") ?? Object.keys(POSES).join(",")).split(",").filter(Boolean);
+const preset = argv[0] && !argv[0].startsWith("--") ? argv[0] : "day";
+const clock = opt("--clock") ?? (preset === "afternoon" ? "15:30" : undefined);
+if (clock && !/^\d{1,2}:\d{2}$/.test(clock)) throw new Error(`--clock ${clock}: HH:MM`);
+const builtin = argv.includes("--builtin") ? "-builtin" : "";
+/** The room id's time of day (and clock), and the name the results go under. */
+const time = (preset === "afternoon" ? "day" : preset) + (clock ? `-clock=${clock}` : "") + builtin;
+const label = preset + (clock && preset !== "afternoon" ? `-${clock.replace(":", "")}` : "") + builtin;
+// (every pose but street-ref by default: the rest are the streaming's, street-ref is 6h's, at its clock)
+const poses = (opt("--poses") ?? Object.keys(POSES).filter((k) => k !== "street-ref").join(",")).split(",").filter(Boolean);
 const tourAt = (opt("--tour") ?? "").split(",").filter(Boolean).map(Number);
 const N = Number(opt("--frames") ?? 120), SPP = opt("--spp") ?? "128";
-const out = join(opt("--out") ?? join(repoRoot, "out/quality"), time);
+const out = join(opt("--out") ?? join(repoRoot, "out/quality"), label);
 const W = 1280, H = 720, FOV = 70;
 /** Snapshots averaged per frame compared, and the frames between them. */
 const K = Number(opt("--average") ?? 8), GAP = 6;
@@ -189,7 +203,7 @@ for (const t of tourAt) {
 
 const ok = (m: Metric) => m.mean_delta_e <= 1 && m.ssim >= 0.98;
 const md = [
-  `# Tokyo image quality, ${time} (${W}x${H}; offline ${SPP} spp; live: ${N} frames still, ${K} snapshots averaged; ${new Date().toISOString().slice(0, 10)})`,
+  `# Tokyo image quality, ${label}${clock ? ` (${clock} JST)` : ""} (${W}x${H}; offline ${SPP} spp; live: ${N} frames still, ${K} snapshots averaged; ${new Date().toISOString().slice(0, 10)})`,
   "",
   "Mean / p99 ΔE76 and SSIM, `threert-render compare`. Bar: ΔE ≤ 1.0, SSIM ≥ 0.98.",
   "",
@@ -199,5 +213,5 @@ const md = [
   "",
 ];
 writeFileSync(join(out, "report.md"), md.join("\n"));
-writeFileSync(join(out, "report.json"), JSON.stringify({ time, width: W, height: H, frames: N, rows }, null, 1));
+writeFileSync(join(out, "report.json"), JSON.stringify({ time: label, width: W, height: H, frames: N, rows }, null, 1));
 console.log(`\n${join(out, "report.md")}`);

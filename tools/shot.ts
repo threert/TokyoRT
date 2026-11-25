@@ -1,6 +1,7 @@
 // An offline render (the path tracer at full quality) of the city from a camera, with the cells round it loaded.
 //   node tools/shot.ts <out.png> <room> <x,y,z> <tx,ty,tz> [fov] [spp] [width height]
 //   e.g. node tools/shot.ts out/alley.png tokyo-night 361.6,32.3,-495.8 398.6,32.8,-480.5 55 256
+//   (a room id "tokyo-day-clock=15:30" renders the day preset at that time's sun: scene/clock.ts)
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { bundleGame } from "../engine/tools/bundle-game.ts";

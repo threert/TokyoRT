@@ -12,13 +12,16 @@
 // Room id: "tokyo-night" | "tokyo-day" | "tokyo-dusk", with "-at=x,z" or "-at=x,y,z" (where to start; the first cells
 // load with the scene), "-look=yaw,pitch" (degrees), "-tour" (the camera flies a set path: clips and benchmarks) and
 // "-route=drive|expressway|flight" (a benchmark route at its speed, below); "-whole" loads every far tile before the
-// first frame (offline stills; live, those past 900 m come after it, the nearest first).
+// first frame (offline stills; live, those past 900 m come after it, the nearest first), "-clock=HH:MM" puts the day
+// preset's sun where it stands at that time over Shinjuku (./clock.ts; e.g. "tokyo-day-clock=15:30", 6h's late
+// afternoon).
 // Controls (pointer "look": click to capture, Esc to let go): mouse to look, W A S D to move, Space / E up, C / Q down,
 // Shift faster, the wheel scales the speed. T cycles day/dusk/night, or 1/2/3 selects a preset; M switches the
 // denoiser (MetalFX / ThreeRT; room suffix "-builtin" starts with ThreeRT's).
 import { facadeWindows, DataTexture, DirectionalLight, preloadModel, GLTFModel, Group, Mesh, MaterialFunction, MeshStandardMaterial, readAsset, rendering, PerspectiveCamera, InstancedMesh, PlaneGeometry, Scene, SurfaceMaterial, BufferGeometry, wetLayer, type Object3D } from "@threert/scene";
 import { defineGame, type FrameContext } from "@threert/gameplay";
 import { tokyoSky } from "./sky.ts";
+import { clockSun, parseClock } from "./clock.ts";
 import { finishMap } from "./hero/finish.ts";
 import { heroMaterials } from "./hero/materials.ts";
 import { propMaterials } from "./hero/props.ts";
@@ -256,6 +259,8 @@ const TIMES = {
 } as const;
 type Time = keyof typeof TIMES;
 let time: Time = "night";
+/** The room id's clock (hours, JST), or null: the day preset's sun and exposure then are that time's (./clock.ts). */
+let clock: number | null = null;
 let sun: DirectionalLight;
 // A material that glows less by day has a daytime twin at that glow (none, for most: then it is no light at all). The
 // near meshes drawn with it take the twin by day: a light kept in the sampler at no power still costs every streamed
@@ -778,7 +783,7 @@ function setTime(next: Time, camera: PerspectiveCamera) {
   const wasNight = time === "night";
   time = next;
   const night = time === "night";
-  const preset = TIMES[time];
+  const preset = time === "day" && clock !== null ? clockSun(clock, TIMES.day) : TIMES[time];
   sun.setSunAngles(preset.elevation, preset.azimuth);
   camera.setManualExposure(preset.ev);
   scene.wetness = night ? 1 : 0;
@@ -791,12 +796,14 @@ function setTime(next: Time, camera: PerspectiveCamera) {
     if (distant) distant.power = night ? 1 : 0;
     for (const f of farQ.values()) for (const m of [f.base, f.lights, f.lamps]) if (m) m.customData = [night ? 0 : FAR_ROOM_DAY, 0, 0, 0];
   }
-  console.log(`Tokyo · ${time} · 1 Day / 2 Dusk / 3 Night / T Cycle`);
+  const at = time === "day" && clock !== null ? ` at ${Math.floor(clock)}:${String(Math.round((clock % 1) * 60)).padStart(2, "0")} (sun ${preset.elevation.toFixed(1)} / ${preset.azimuth.toFixed(1)} deg, EV ${preset.ev.toFixed(2)})` : "";
+  console.log(`Tokyo · ${time}${at} · 1 Day / 2 Dusk / 3 Night / T Cycle`);
 }
 
 export function sceneFor(room: string) {
   const requested = room.split("-")[1];
   time = requested === "day" || requested === "dusk" ? requested : "night";
+  clock = parseClock(room);
   const night = time === "night";
   tour = room.includes("-tour");
   const rname = /-route=(\w+)/.exec(room)?.[1];
