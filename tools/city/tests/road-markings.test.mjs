@@ -7,7 +7,7 @@ import { makeSurface } from '../shared/decks.js';
 import { roadMesh, terrainMesh } from '../mesh/meshing.js';
 import { createDraper } from '../mesh/drape.js';
 import { decalMesh, DECAL_COLS, DECAL_ROWS } from '../mesh/decals.js';
-import { ROOT } from '../pipeline/config.mjs';
+import { ROOT, AREAS } from '../pipeline/config.mjs';
 
 const paint = (a) => a.kind === AREA.MARK_WHITE || a.kind === AREA.MARK_YELLOW;
 const asphalt = (a) => a.kind === AREA.ROAD || a.kind === AREA.CARRIAGEWAY || a.kind === AREA.PARKING;
@@ -123,7 +123,7 @@ for (const [label, decks] of [
 }
 
 // Exercise real compiled data when present. --all checks every compiled tile.
-for (const id of ['shibuya', 'tokyo', 'shiba']) {
+for (const id of Object.keys(AREAS)) {
   const base = path.join(ROOT, 'tiles', id), manifestFile = path.join(base, 'manifest.json');
   if (!fs.existsSync(manifestFile)) { console.log(`skip ${id} (no compiled tiles)`); continue; }
   const m = JSON.parse(fs.readFileSync(manifestFile, 'utf8'));

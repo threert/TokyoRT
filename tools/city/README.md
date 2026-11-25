@@ -17,6 +17,8 @@ tiles into geometry. Imported from [jeantimex/tokyo](https://github.com/jeantime
 - `mesh/meshing.js` takes a building's wall colour and curtain wall from `b.look` when it has one (TokyoRT's far level:
   the look the near levels' dressing gave that building, `looks.json` from tools/tokyo/city-bake.ts). With a look, a
   building is glass only for a curtain wall (`facadeCategory`); `tests/far-looks.test.mjs` checks it.
+- the tests check every compiled area (upstream: Shibuya's tiles, and Tokyo's and Shiba's road markings), and the tile
+  format's round trip covers LOD2 surfaces, walls and signs.
 
 ## Use
 
@@ -26,7 +28,8 @@ tiles into geometry. Imported from [jeantimex/tokyo](https://github.com/jeantime
 node tools/tokyo/prefetch-plateau.mjs --area=shinjuku                               # PLATEAU with curl (fetch.mjs then skips it)
 node tools/city/pipeline/fetch.mjs --area=shinjuku                                  # raw data -> assets/city/raw/shinjuku
 node --max-old-space-size=8192 tools/city/pipeline/compile.mjs --area=shinjuku     # -> assets/city/tiles/shinjuku
-node tools/city/tests/tileformat.test.mjs                                           # the tile format's round trip
+npm test                                                                           # the tile format, road markings
+                                                                                   # (and the compiled areas, if any)
 ```
 
 Areas (`pipeline/config.mjs`): tokyo, shiba, shibuya, shinjuku, chiyoda, chuo, fujinomiya. Each is about 3.4 × 2.8 km.

@@ -1,11 +1,11 @@
 // Tile format round trip, plus sanity checks over the compiled area when it exists.
-// Usage: node tools/tests/tileformat.test.mjs
+// Usage: node tools/city/tests/tileformat.test.mjs (npm test)
 import fs from 'node:fs';
 import path from 'node:path';
 import assert from 'node:assert/strict';
-import { encodeTile, decodeTile, AREA, BFLAG, PROP } from '../shared/tileformat.js';
+import { encodeTile, decodeTile, AREA, BFLAG, PROP, BARRIER } from '../shared/tileformat.js';
 import { meshCode3, meshBounds3, meshBlock } from '../shared/geo.js';
-import { ROOT } from '../pipeline/config.mjs';
+import { ROOT, AREAS } from '../pipeline/config.mjs';
 
 let passed = 0;
 const test = (name, fn) => { fn(); passed++; console.log('ok  ', name); };
@@ -19,6 +19,14 @@ test('encode -> decode round trip', () => {
     props: [{ kind: PROP.POLE, variant: 1, rot: Math.PI / 2, x: 3.5, z: -4.25, scale: 1.25 }],
     wires: [[0, 0, 30, -2.5]],
   };
+  // (a LOD2 shell, a parapet and a ground barrier, a sign with its Japanese text)
+  tile.buildings[0].hint = (0x80000000 | (3 << 24) | 0xc0a080) >>> 0;
+  tile.buildings[0].surfaces = [
+    { roof: true, rings: [[[0, 16.5, 0], [10, 16.5, 0], [10, 16.5, -10]]], uv: [[0, 0, 1, 0, 0.5, 1]] },
+    { roof: false, rings: [[[0, 0, 0], [10, 0, 0], [10, 16.5, 0], [0, 16.5, 0]]] },
+  ];
+  tile.walls = [[0, 0, 5, 0, 2], [1, 1, 4, 1, -BARRIER.HEDGE]];
+  tile.signs = [{ style: 2, color: 5, x: 1, y: 6.5, z: -0.25, nx: 0, nz: 1, w: 1.5, h: 0.5, text: 'スナック 夜明け' }];
   const out = decodeTile(encodeTile(tile).slice().buffer);
   assert.equal(out.tx, -3); assert.equal(out.tz, 7);
   const b = out.buildings[0];
@@ -30,6 +38,13 @@ test('encode -> decode round trip', () => {
   assert.deepEqual([p.kind, p.variant, p.x, p.z, p.scale], [PROP.POLE, 1, 3.5, -4.25, 1.25]);
   assert.ok(Math.abs(p.rot - Math.PI / 2) < 1e-3);
   assert.deepEqual([...out.wires], [0, 0, 30, -2.5]);
+  assert.equal(b.hint, tile.buildings[0].hint);
+  assert.deepEqual(b.surfaces.map((x) => [x.roof, x.rings.map((r) => [...r])]),
+    tile.buildings[0].surfaces.map((x) => [x.roof, x.rings.map((r) => r.flat())]));
+  assert.ok(b.surfaces[0].uv[0].every((v, i) => Math.abs(v - tile.buildings[0].surfaces[0].uv[0][i]) < 1e-4));
+  assert.equal(b.surfaces[1].uv, null);
+  assert.deepEqual([...out.walls], tile.walls.flat());
+  assert.deepEqual(out.signs, tile.signs);
 });
 
 test('JIS mesh codes', () => {
@@ -41,9 +56,13 @@ test('JIS mesh codes', () => {
   assert.ok(block.includes('53394506') && block.includes('53393585'));
 });
 
-const dir = path.join(ROOT, 'tiles/shibuya');
-if (fs.existsSync(path.join(dir, 'manifest.json'))) {
-  test('compiled shibuya tiles are well formed', () => {
+// Every compiled area (TokyoRT compiles shinjuku).
+let compiled = 0;
+for (const id of Object.keys(AREAS)) {
+  const dir = path.join(ROOT, 'tiles', id);
+  if (!fs.existsSync(path.join(dir, 'manifest.json'))) continue;
+  compiled++;
+  test(`compiled ${id} tiles are well formed`, () => {
     const m = JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8'));
     const areaEN = (r) => { let s = 0; for (let i = 0, n = r.length / 2; i < n; i++) { const j = (i + 1) % n; s += r[j * 2] * r[i * 2 + 1] - r[i * 2] * r[j * 2 + 1]; } return s / 2; };
     let nB = 0;
@@ -63,13 +82,16 @@ if (fs.existsSync(path.join(dir, 'manifest.json'))) {
         }
       }
     }
-    const terrain = new Float32Array(fs.readFileSync(path.join(dir, m.terrain.file)).buffer.slice(0));
+    // (the file's bytes only: a Buffer's ArrayBuffer may be larger than the file)
+    const bytes = fs.readFileSync(path.join(dir, m.terrain.file));
+    const terrain = new Float32Array(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
     assert.equal(terrain.length, m.terrain.w * m.terrain.h);
     assert.ok(terrain.every(Number.isFinite));
     const roads = JSON.parse(fs.readFileSync(path.join(dir, m.roads), 'utf8'));
     for (const e of roads.edges) assert.ok(e.a < roads.nodes.length && e.b < roads.nodes.length && e.pts.length >= 6);
     console.log(`      ${m.tiles.length} tiles, ${nB} buildings, ${roads.edges.length} road edges checked`);
   });
-} else console.log('skip  compiled tiles (run npm run fetch && npm run compile)');
+}
+if (!compiled) console.log('skip  compiled tiles (none under assets/city/tiles: tools/setup.sh, or tools/city/README.md)');
 
 console.log(`${passed} passed`);

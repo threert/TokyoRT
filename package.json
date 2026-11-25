@@ -8,6 +8,7 @@
     "setup": "sh tools/setup.sh",
     "demo": "sh tools/demo.sh",
     "typecheck": "tsc -p .",
+    "test": "node tools/city/tests/tileformat.test.mjs && node tools/city/tests/road-markings.test.mjs && node tools/city/tests/far-looks.test.mjs",
     "trees": "tsx tools/tokyo/trees.ts"
   },
   "dependencies": {
