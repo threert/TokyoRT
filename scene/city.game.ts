@@ -15,7 +15,7 @@
 // Controls (pointer "look": click to capture, Esc to let go): mouse to look, W A S D to move, Space / E up, C / Q down,
 // Shift faster, the wheel scales the speed. T cycles day/dusk/night, or 1/2/3 selects a preset; M switches the
 // denoiser (MetalFX / ThreeRT; room suffix "-builtin" starts with ThreeRT's).
-import { facadeWindows, DirectionalLight, GLTFModel, Group, Mesh, MaterialFunction, MeshStandardMaterial, readAsset, rendering, PerspectiveCamera, InstancedMesh, PlaneGeometry, Scene, SurfaceMaterial, BufferGeometry, wetLayer, type Object3D } from "@threert/scene";
+import { facadeWindows, DataTexture, DirectionalLight, GLTFModel, Group, Mesh, MaterialFunction, MeshStandardMaterial, readAsset, rendering, PerspectiveCamera, InstancedMesh, PlaneGeometry, Scene, SurfaceMaterial, BufferGeometry, wetLayer, type Object3D } from "@threert/scene";
 import { defineGame, type FrameContext } from "@threert/gameplay";
 import { tokyoSky } from "./sky.ts";
 import { finishMap } from "./hero/finish.ts";
@@ -263,7 +263,7 @@ const dayOf = new Map<MeshStandardMaterial, MeshStandardMaterial>();
 const lit = (m: MeshStandardMaterial) => (time === "night" ? m : dayOf.get(m) ?? m);
 const cells = new Map<string, Cell>();
 /** Far objects by tile and quadrant: buildings (with their lit windows and signs) and trees. */
-type FarQuadrant = { covered: boolean; base: GLTFModel | null; lights: GLTFModel | null };
+type FarQuadrant = { covered: boolean; base: GLTFModel | null; lights: GLTFModel | null; trees: InstancedMesh[] };
 const farQ = new Map<string, FarQuadrant>();
 let scene: Scene;
 const cam = { pos: [0, 0, 0] as V3, yaw: 0, pitch: 0, speed: 6 };
@@ -459,6 +459,7 @@ function setFar(c: Cell) {
   // again would rebuild the scene once more)
   f.covered = c.level >= 0;
   if (f.base) f.base.position.y = f.covered ? -10000 : 0;
+  for (const t of f.trees) t.position.y = f.covered ? -10000 : 0;
   if (f.lights) {
     f.lights.position.y = f.covered ? -10000 : 0;
     f.lights.power = !f.covered && time === "night" ? 1 : 0;
@@ -598,6 +599,59 @@ function settle() {
 }
 const deg = (r: number) => +(r * 180 / Math.PI).toFixed(3);
 
+// ---------------------------------------------------------------- the far level's trees
+// Copies of six forms (tools/tokyo/to-glb.ts --city, trees.bin): each form one geometry, a quadrant's copies of it one
+// instanced mesh (as triangles of their own they were 7.8 M of the two areas' far level, 30 %). One material for all:
+// a form's bark and three leaf shades are swatches of a palette texture, its uvs pick theirs (the colour and the
+// roughness each part had as a material of its own).
+function farTrees(a: Area) {
+  const path = `assets/city/glb/${a.name}-far/trees.bin`;
+  let n: number;
+  try {
+    n = new DataView(engine.readAsset(path, 0, 8)).getUint32(4, true);
+  } catch {
+    return null;
+  }
+  const head = JSON.parse(ascii(new Uint8Array(engine.readAsset(path, 8, n)))) as { palette: number[][]; forms: { v: number; i: number; at: number }[]; quads: Record<string, [number, number, number][]> };
+  const base = 8 + n;
+  const swatches = (f: (c: number[]) => number[], space: "srgb" | "linear") => {
+    const P = head.palette.length, px = new Uint8Array(P * 32 * 32 * 4);
+    for (let y = 0; y < 32; y++) for (let x = 0; x < P * 32; x++) {
+      const v = f(head.palette[Math.floor(x / 32)]);
+      px.set([...v.map((c) => Math.round(Math.min(1, Math.max(0, c)) * 255)), 255], (y * P * 32 + x) * 4);
+    }
+    return new DataTexture(P * 32, 32, px, space);
+  };
+  const srgb = (c: number) => (c <= 0.0031308 ? c * 12.92 : 1.055 * Math.pow(c, 1 / 2.4) - 0.055);
+  const material = new MeshStandardMaterial({ map: swatches((c) => c.slice(0, 3).map(srgb), "srgb"), roughnessMap: swatches((c) => [1, c[3], 1], "linear"), roughness: 1 });
+  material.name = "far trees";
+  const geometries = head.forms.map((f) => {
+    const buf = engine.readAsset(path, base + f.at, f.v * 32 + f.i * 4);
+    const g = new BufferGeometry();
+    g.positions = new Float32Array(buf, 0, f.v * 3);
+    g.normals = new Float32Array(buf, f.v * 12, f.v * 3);
+    g.uvs = new Float32Array(buf, f.v * 24, f.v * 2);
+    g.index = new Uint32Array(buf, f.v * 32, f.i);
+    return g;
+  });
+  /** A quadrant's trees: an instanced mesh a form. */
+  const quadrant = (key: string) => (head.quads[key] ?? []).map(([form, count, at]) => {
+    const src = new Float32Array(engine.readAsset(path, base + at, count * 48));
+    const inst = new InstancedMesh(geometries[form], material, count);
+    const m = inst.instanceMatrix.array;
+    for (let i = 0; i < count; i++) {
+      const s = i * 12, o = i * 16;
+      m[o] = src[s]; m[o + 1] = src[s + 1]; m[o + 2] = src[s + 2];
+      m[o + 4] = src[s + 3]; m[o + 5] = src[s + 4]; m[o + 6] = src[s + 5];
+      m[o + 8] = src[s + 6]; m[o + 9] = src[s + 7]; m[o + 10] = src[s + 8];
+      m[o + 12] = src[s + 9]; m[o + 13] = src[s + 10]; m[o + 14] = src[s + 11]; m[o + 15] = 1;
+    }
+    inst.position.set(a.ox, 0, a.oz);
+    return inst;
+  });
+  return { quadrant };
+}
+
 // ---------------------------------------------------------------- beyond the area
 // The city goes on past the compiled area (the user: from above 140 m the world stopped at a grey plain a kilometre
 // out): blocks and towers out to ~6 km, baked (tools/tokyo/distant.ts: one GLB, static, never streamed). Their facades
@@ -700,6 +754,7 @@ export function sceneFor(room: string) {
   const tex = (id: string, size: number) => { const t = finishMap(id, "color"); t.repeat = [1 / size, 1 / size]; return t; };
   const road = (id: string, size: number, puddles: number) => new SurfaceMaterial({ map: tex(id, size), normalMap: finishMap(id, "normal"), roughnessMap: finishMap(id, "rough"), worldScale: size, wet: 1, puddles: { scale: 2.5, amount: puddles }, grime: { amount: 0.3, scale: 3 } });
   const functions = { "road 0 ": road("asphalt", 3.5, 0.2).shader!, "road 1 ": road("pavers", 1.6, 0.12).shader!, "road 2 ": foliage, "road 3 ": road("concrete-worn", 2.5, 0.12).shader!, paint: wetLayer({ puddles: 0.4 }) };
+  const trees = new Map(AREAS.map((a) => [a, lowmem ? null : farTrees(a)]));
   for (const a of AREAS) for (const t of a.far.tiles) {
     const uri = `assets/city/glb/${a.name}-far/${t.file}`;
     const ground = new GLTFModel(uri, { nodes: ["ground"], functions });
@@ -720,9 +775,11 @@ export function sceneFor(room: string) {
       };
       farQ.set(`${a.name}:${t.x}_${t.z}_${q}`, {
         covered: false,
-        base: model(lowmem ? [`b${q}`] : [`b${q}`, `p${q}`, `t${q}`]),
+        base: model(lowmem ? [`b${q}`] : [`b${q}`, `p${q}`]),
         lights: model([`b${q}-night`, `p${q}-night`], true),
+        trees: trees.get(a)?.quadrant(`${t.x}_${t.z}_${q}`) ?? [],
       });
+      for (const m of farQ.get(`${a.name}:${t.x}_${t.z}_${q}`)!.trees) scene.add(m);
     }
   }
   // the Shuto expressway's elevated decks (tools/tokyo/viaducts.ts: the compiled city has the road's level, no structure)

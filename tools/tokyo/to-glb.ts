@@ -29,7 +29,7 @@ import { buildTile } from "../city/mesh/meshing.js";
 import { KIND, GROUND } from "../city/mesh/constants.js";
 import { repoRoot } from "../lib/paths.ts";
 import { GlbBuilder, type Material } from "./glb.ts";
-import { PROP_MATERIALS, propSoups } from "./props.ts";
+import { PROP_MATERIALS, propSoups, TREE_FORMS, treeCopies } from "./props.ts";
 import { signBoards } from "./signs.ts";
 import { decalGeometry, decalShapes } from "./decals.ts";
 import { WINDOW_GROUPS, WINDOW_NODES, WINDOW_SWITCH } from "../../scene/area.ts";
@@ -281,6 +281,53 @@ function setLooks(tile: ReturnType<typeof decodeTile>, file: string) {
     if (l) b.look = { wall: albedo(l.curtain ? l.curtain.spandrel : l.wall), curtain: l.curtain?.glass ?? null };
   }
 }
+/** The far level's trees by tile and quadrant ("x_z_q"): each a form and its frame (props.ts `treeCopies`). */
+const farTrees = new Map<string, { form: number; frame: number[] }[]>();
+/** trees.bin, the far level's trees for the scene to draw as instances (scene/city.game.ts `farTrees`): "TKT1", the
+ *  header's length (u32) and the header (JSON: `palette`, each colour [r, g, b] linear and its roughness; `forms`,
+ *  each form's vertex and index counts and where its data is; `quads`, each quadrant's [form, copies, where their
+ *  frames are]), then each form's positions, normals, uvs (its colour's place on the palette: a row of 32 x 32 px
+ *  swatches) and indices, then the frames (12 floats a copy). */
+function writeTrees(dir: string) {
+  const names: string[] = [];
+  const forms = TREE_FORMS.map((parts) => {
+    const pos: number[] = [], nor: number[] = [], uv: number[] = [];
+    for (const part of parts) {
+      let k = names.indexOf(part.mat);
+      if (k < 0) k = names.push(part.mat) - 1;
+      for (const t of part.tris) for (const p of t.p) { pos.push(...p); nor.push(...t.n); uv.push(k, 0.5); }
+    }
+    return { pos, nor, uv };
+  });
+  for (const f of forms) for (let i = 0; i < f.uv.length; i += 2) f.uv[i] = (f.uv[i] + 0.5) / names.length;
+  const palette = names.map((n) => [...PROP_MATERIALS[n].color, PROP_MATERIALS[n].roughness]);
+  const blobs: Buffer[] = [];
+  let at = 0;
+  const put = (a: Float32Array | Uint32Array) => { const b = Buffer.from(a.buffer, a.byteOffset, a.byteLength); blobs.push(b); const o = at; at += b.length; return o; };
+  const fhead = forms.map((f) => {
+    const v = f.pos.length / 3;
+    const o = put(Float32Array.from(f.pos));
+    put(Float32Array.from(f.nor));
+    put(Float32Array.from(f.uv));
+    put(Uint32Array.from({ length: v }, (_, i) => i));
+    return { v, i: v, at: o };
+  });
+  const quads: Record<string, [number, number, number][]> = {};
+  let copies = 0;
+  for (const [key, list] of farTrees) {
+    const byForm = new Map<number, number[]>();
+    for (const c of list) (byForm.get(c.form) ?? byForm.set(c.form, []).get(c.form)!).push(...c.frame);
+    quads[key] = [...byForm].map(([form, fr]) => [form, fr.length / 12, put(Float32Array.from(fr))]);
+    copies += list.length;
+  }
+  const head = Buffer.from(JSON.stringify({ palette, forms: fhead, quads }));
+  const pre = Buffer.alloc(8);
+  pre.writeUInt32LE(0x3154_4b54, 0);
+  pre.writeUInt32LE(head.length, 4);
+  // (the data's offsets count from the end of the header)
+  writeFileSync(join(dir, "trees.bin"), Buffer.concat([pre, head, ...blobs]));
+  return copies;
+}
 async function cityTile(tile: ReturnType<typeof decodeTile>, tl: Manifest["tiles"][number], g: GlbBuilder, tag: string) {
   const x0 = tl.x * size, z0 = tl.z * size, half = size / 2;
   const quad = (x: number, z: number) => (x >= x0 + half ? 1 : 0) + (z >= z0 + half ? 2 : 0);
@@ -320,6 +367,12 @@ async function cityTile(tile: ReturnType<typeof decodeTile>, tl: Manifest["tiles
       const sel: number[] = [];
       for (let i = 0; i < all.length; i += 6) if (quad(all[i + 3], all[i + 4]) === q && (all[i] === PROP.TREE) === trees) sel.push(...all.subarray(i, i + 6));
       if (!sel.length) continue;
+      // (the trees: copies of a few forms, the scene's instances, in trees.bin; not triangles of the tile's)
+      if (trees) {
+        const copies = treeCopies(Float32Array.from(sel), (x, z) => surface(x, z));
+        if (copies.length) farTrees.set(`${tl.x}_${tl.z}_${q}`, copies);
+        continue;
+      }
       const p = propSoups(Float32Array.from(sel), (x, z) => surface(x, z));
       for (const { node, mat, soup: sp } of p.soups.values()) {
         const pm = PROP_MATERIALS[mat];
@@ -548,6 +601,8 @@ if (only) {
   process.exit(0);
 }
 if (cityLevel) {
+  const trees = writeTrees(outDir);
+  console.log(`${area}: ${trees} far trees as copies of ${TREE_FORMS.length} forms -> trees.bin`);
   writeFileSync(join(outDir, "index.json"), JSON.stringify({ area, tileSize: size, bounds: manifest.bounds, tiles: index, triangles: totals.triangles }, null, 1) + "\n");
   console.log(`${area} (city far level): ${totals.tiles} tiles, ${(totals.triangles / 1e6).toFixed(2)} M triangles, ${(totals.bytes / 1e6).toFixed(0)} MB in ${((Date.now() - t0) / 1000).toFixed(0)} s -> ${outDir}`);
   process.exit(0);

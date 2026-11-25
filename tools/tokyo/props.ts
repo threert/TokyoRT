@@ -58,3 +58,21 @@ export function propSoups(props: Float32Array, ground: (x: number, z: number) =>
   }
   return { soups: out, counts };
 }
+
+/** The far level's trees as copies (the scene draws each form once, its copies instances: tools/tokyo/to-glb.ts
+ *  `--city`, trees.bin): the forms (their triangles by material: bark and three leaf shades), and each tree of `props`
+ *  as its form and its frame (12 floats: the turned and scaled axes x, y, z, then the place; on the ground). */
+export const TREE_FORMS = treeGeometry.forms;
+export function treeCopies(props: Float32Array, ground: (x: number, z: number) => number) {
+  const out: { form: number; frame: number[] }[] = [];
+  for (let i = 0; i < props.length; i += 6) {
+    const [kind, variant, rot, x0, z0, scale] = [props[i], props[i + 1], props[i + 2], props[i + 3], props[i + 4], props[i + 5]];
+    if (kind !== PROP.TREE || !TREE_FORMS[variant]) continue;
+    for (const { x, z, rot: r, scale: k } of treeSites(variant, x0, z0, rot, scale)) {
+      const co = Math.cos(r), si = Math.sin(r), y0 = ground(x, z) + (LIFT[kind] ?? 0);
+      // (as propSoups places them: p -> (x + (p.x co + p.z si) k, y0 + p.y k, z + (-p.x si + p.z co) k))
+      out.push({ form: variant, frame: [co * k, 0, -si * k, 0, k, 0, si * k, 0, co * k, x, y0, z] });
+    }
+  }
+  return out;
+}
