@@ -11,6 +11,6 @@ const p = pos.split(",").map(Number), t = target.split(",").map(Number);
 const bundle = join(repoRoot, "out/bundles/city.js");
 await bundleGame(join(repoRoot, "scene/city.game.ts"), bundle);
 const bin = join(repoRoot, "engine/renderer/target/release/threert-render");
-const r = execFileSync(bin, ["render", bundle, "-o", out, "--assets", repoRoot, "--room", `${room}-at=${p.join(",")}`, "--spp", spp, "--width", w, "--height", h, "--camera", JSON.stringify({ position: p, target: t, fov: Number(fov) })], { env: { ...process.env, THREERT_SCRIPT_MB: "12288" }, stdio: ["ignore", "pipe", "inherit"] }).toString().trim().split("\n").pop()!;
+const r = execFileSync(bin, ["render", bundle, "-o", out, "--assets", repoRoot, "--room", `${room}-whole-at=${p.join(",")}`, "--spp", spp, "--width", w, "--height", h, "--camera", JSON.stringify({ position: p, target: t, fov: Number(fov) })], { env: { ...process.env, THREERT_SCRIPT_MB: "12288" }, stdio: ["ignore", "pipe", "inherit"] }).toString().trim().split("\n").pop()!;
 const st = JSON.parse(r);
 console.log(`${out}: ${(st.timings_ms.total_ms / 1000).toFixed(0)} s, ${st.spp} spp`);

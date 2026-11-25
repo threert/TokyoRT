@@ -42,12 +42,12 @@ Click to capture the pointer (**Esc** lets go). **Mouse** to look, **W A S D** t
 **C** / **Q** down, **Shift** faster, the **wheel** scales the speed; **1** / **2** / **3** for day / dusk / night,
 **T** to cycle them; **M** switches the denoiser between the device's (MetalFX's on a Mac, DLSS Ray Reconstruction
 on an RTX GPU) and ThreeRT's own. You start in a Golden Gai alley; fly up and out over the city. The first frame takes
-10–20 s.
+about 8 s; the far level past 900 m comes in over the next ~40 s, the nearest tiles first.
 
 Room options, appended to the room id (`tools/demo.sh` takes the room's time; the tools take whole rooms):
 `-builtin` starts with ThreeRT's denoiser; `-lowmem` fits a GPU of 8 GB (an RTX laptop's: the mid level to 320 m,
 the far level without its props and trees; with `THREERT_TEX_MAX_DIM=1024`); `-r0=m`, `-r1=m` set the street and
-mid levels' radii (140 and 480 m).
+mid levels' radii (140 and 480 m); `-whole` loads the whole far level before the first frame (offline stills do).
 
 `node tools/tour.ts tokyo-night-tour 90` flies a set path in the live view and prints its frame times;
 `node tools/tour.ts tokyo-day-route=drive` (or `=expressway`, `=flight`) runs one of the benchmark routes to its end:
@@ -62,7 +62,7 @@ The city is three levels of detail, picked per 128 m cell by distance from the c
 
 | level | where | what it is |
 |---|---|---|
-| far | always resident | PLATEAU's buildings as compiled (surveyed LOD2 shells where PLATEAU has them, walls and roofs from footprint and height elsewhere, window grids) in the colours the near levels dress each one in (its wall finish's mean, a tower's spandrels and curtain glass; by day its windows show their rooms), trees (47 k copies of six forms, an instance each), the ground of every tile with its roads in generated asphalt and pavers |
+| far | always resident (within 900 m before the first frame, the rest after it, the nearest first) | PLATEAU's buildings as compiled (surveyed LOD2 shells where PLATEAU has them, walls and roofs from footprint and height elsewhere, window grids) in the colours the near levels dress each one in (its wall finish's mean, a tower's spandrels and curtain glass; by day its windows show their rooms), trees (47 k copies of six forms, an instance each), the ground of every tile with its roads in generated asphalt and pavers |
 | mid (L1) | within ~480 m | each cell's buildings rebuilt from their footprints: windows by building, materials, bands and balconies, signs and sign towers, roofs with their tanks and air conditioners, trees; towers (45 m and up) in curtain walls with lobbies, plant rooms, aviation lights and over 100 m the emergency helipad |
 | street (L0) | within ~140 m | the same buildings in full: doors and windows cut into the walls with depth, shops and bars, eaves, lanterns, noren, meters, pipes, utility poles and wires across the alleys, gutters, props |
 

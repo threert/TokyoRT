@@ -117,7 +117,7 @@ const add = (pose: string, what: string, a: string, c: string) => {
 
 /** The offline render at a pose, with the room's suffix (the level radii). */
 function offline(p: { pos: V3; target: V3 }, suffix: string, path: string) {
-  execFileSync(bin, ["render", bundle, "-o", path, "--assets", repoRoot, "--room", `tokyo-${time}-at=${f3(p.pos)}${suffix}`, "--spp", SPP, "--width", String(W), "--height", String(H), "--camera", JSON.stringify({ position: p.pos, target: p.target, fov: FOV })], { env: { ...process.env, ...env }, stdio: ["ignore", "ignore", "pipe"] });
+  execFileSync(bin, ["render", bundle, "-o", path, "--assets", repoRoot, "--room", `tokyo-${time}-whole-at=${f3(p.pos)}${suffix}`, "--spp", SPP, "--width", String(W), "--height", String(H), "--camera", JSON.stringify({ position: p.pos, target: p.target, fov: FOV })], { env: { ...process.env, ...env }, stdio: ["ignore", "ignore", "pipe"] });
   return path;
 }
 

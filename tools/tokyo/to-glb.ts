@@ -282,6 +282,8 @@ function setLooks(tile: ReturnType<typeof decodeTile>, file: string) {
   }
 }
 /** The far level's trees by tile and quadrant ("x_z_q"): each a form and its frame (props.ts `treeCopies`). */
+/** The far level's sign atlases, at this fraction of the near levels' size. */
+const FAR_SIGN_SCALE = 0.25;
 const farTrees = new Map<string, { form: number; frame: number[] }[]>();
 /** trees.bin, the far level's trees for the scene to draw as instances (scene/city.game.ts `farTrees`): "TKT1", the
  *  header's length (u32) and the header (JSON: `palette`, each colour [r, g, b] linear and its roughness; `forms`,
@@ -424,7 +426,9 @@ async function cityTile(tile: ReturnType<typeof decodeTile>, tl: Manifest["tiles
     }
 
     if (mq?.signs?.length) {
-      const sb = await signBoards(mq.signs);
+      // (at a quarter of the near levels' size: 4.7 -> 0.3 Gpx of atlases for two areas, each far tile's ~10 MB of
+      // texture pages a commit of its own when the tile streams in)
+      const sb = await signBoards(mq.signs, FAR_SIGN_SCALE);
       if (sb) {
         for (const [p, pg] of sb.pages.entries()) {
           const tex = g.image(new Uint8Array(pg.atlas), "image/png", true);

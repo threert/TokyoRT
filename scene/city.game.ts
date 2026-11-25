@@ -11,11 +11,12 @@
 //
 // Room id: "tokyo-night" | "tokyo-day" | "tokyo-dusk", with "-at=x,z" or "-at=x,y,z" (where to start; the first cells
 // load with the scene), "-look=yaw,pitch" (degrees), "-tour" (the camera flies a set path: clips and benchmarks) and
-// "-route=drive|expressway|flight" (a benchmark route at its speed, below).
+// "-route=drive|expressway|flight" (a benchmark route at its speed, below); "-whole" loads every far tile before the
+// first frame (offline stills; live, those past 900 m come after it, the nearest first).
 // Controls (pointer "look": click to capture, Esc to let go): mouse to look, W A S D to move, Space / E up, C / Q down,
 // Shift faster, the wheel scales the speed. T cycles day/dusk/night, or 1/2/3 selects a preset; M switches the
 // denoiser (MetalFX / ThreeRT; room suffix "-builtin" starts with ThreeRT's).
-import { facadeWindows, DataTexture, DirectionalLight, GLTFModel, Group, Mesh, MaterialFunction, MeshStandardMaterial, readAsset, rendering, PerspectiveCamera, InstancedMesh, PlaneGeometry, Scene, SurfaceMaterial, BufferGeometry, wetLayer, type Object3D } from "@threert/scene";
+import { facadeWindows, DataTexture, DirectionalLight, preloadModel, GLTFModel, Group, Mesh, MaterialFunction, MeshStandardMaterial, readAsset, rendering, PerspectiveCamera, InstancedMesh, PlaneGeometry, Scene, SurfaceMaterial, BufferGeometry, wetLayer, type Object3D } from "@threert/scene";
 import { defineGame, type FrameContext } from "@threert/gameplay";
 import { tokyoSky } from "./sky.ts";
 import { finishMap } from "./hero/finish.ts";
@@ -263,7 +264,10 @@ const dayOf = new Map<MeshStandardMaterial, MeshStandardMaterial>();
 const lit = (m: MeshStandardMaterial) => (time === "night" ? m : dayOf.get(m) ?? m);
 const cells = new Map<string, Cell>();
 /** Far objects by tile and quadrant: buildings (with their lit windows and signs) and trees. */
-type FarQuadrant = { covered: boolean; base: GLTFModel | null; lights: GLTFModel | null; trees: InstancedMesh[] };
+/** (`lights`: its lit windows and signs, which light nothing; `lamps`: its street lamps' heads, which do by night, so
+ *  that each model of them added rebuilds the light list, ~100 ms of the GPU's. A quadrant added after the first frame
+ *  has its lamps to add (`addLamps`) with every other's once the far level is in, in one commit.) */
+type FarQuadrant = { covered: boolean; base: GLTFModel | null; lights: GLTFModel | null; lamps: GLTFModel | null; trees: InstancedMesh[]; addLamps: (() => void) | null };
 const farQ = new Map<string, FarQuadrant>();
 let scene: Scene;
 const cam = { pos: [0, 0, 0] as V3, yaw: 0, pitch: 0, speed: 6 };
@@ -460,9 +464,9 @@ function setFar(c: Cell) {
   f.covered = c.level >= 0;
   if (f.base) f.base.position.y = f.covered ? -10000 : 0;
   for (const t of f.trees) t.position.y = f.covered ? -10000 : 0;
-  if (f.lights) {
-    f.lights.position.y = f.covered ? -10000 : 0;
-    f.lights.power = !f.covered && time === "night" ? 1 : 0;
+  for (const m of [f.lights, f.lamps]) if (m) {
+    m.position.y = f.covered ? -10000 : 0;
+    m.power = !f.covered && time === "night" ? 1 : 0;
   }
 }
 
@@ -510,6 +514,9 @@ function want(c: Cell, x: number, y: number, z: number) {
   if (d < R1 || (cur === 1 && d < R1 + KEEP)) return 1;
   return -1;
 }
+
+/** Whether a cell's level is loading. */
+const loading = () => { for (const c of cells.values()) if (c.loading) return true; return false; };
 
 /** One frame of streaming: retire what is out of range, then load the nearest cell whose level is wrong. */
 function stream(x: number, y: number, z: number, budget: { tris: number; until: number; objects: number }) {
@@ -587,6 +594,11 @@ function routeAt(r: Route, t: number) {
 //   settle: every cell to its level now, whole (logged "tokyo: settled" when done).
 let held = false;
 function settle() {
+  for (const step of farSteps.splice(0)) step();
+  for (const f of farQ.values()) f.addLamps?.();
+  farLamps = false;
+  for (const n of farNext.splice(0)) for (const step of farTile(n.p.a, n.p.t, n.p.group)) step();
+  loadFar(cam.pos, Infinity);
   for (let n = 0; n < 100_000; n++) {
     let busy = false;
     for (const c of cells.values()) if (c.loading || (want(c, ...cam.pos) >= 0 && want(c, ...cam.pos) !== c.level) || (c.level >= 0 && want(c, ...cam.pos) < 0)) busy = true;
@@ -598,6 +610,76 @@ function settle() {
   console.log(`tokyo: settled with ${n[0]} cells at L0, ${n[1]} at L1 (r0 ${R0}, r1 ${R1}, keep ${KEEP})`);
 }
 const deg = (r: number) => +(r * 180 / Math.PI).toFixed(3);
+
+// ---------------------------------------------------------------- the far tiles, the nearest first
+type FarTile = { x: number; z: number; file: string; nodes?: string[] };
+/** Far tiles not loaded yet, and how a tile loads (set by the scene's setup: it needs its materials). */
+const farPending: { a: Area; t: FarTile; group: Group }[] = [];
+let farTile: (a: Area, t: FarTile, group: Group) => (() => void)[] = () => [];
+/** The node sets of a tile's models (as `farTile` makes them): what a tile's preload reads the triangles of. */
+let farNodes: (t: FarTile) => string[][] = () => [];
+/** The tiles next in line, their files parsed meanwhile on a worker thread (`preloadModel`): a tile added whole in one
+ *  frame's commit (its ~13 models: ~10 ms once parsed; parsed in the commit, 30-90 ms more). */
+const farNext: { p: (typeof farPending)[number]; since: number }[] = [];
+/** The models of the tile being added, still to go (`FAR_STEPS` a frame). */
+const farSteps: (() => void)[] = [];
+const FAR_STEPS = 7;
+/** Whether the scene's setup is adding tiles (their lit windows with them: the build has them at no cost). */
+let farSetup = false;
+/** Whether quadrants have their lamps still to add (`FarQuadrant.addLamps`). */
+let farLamps = false;
+let farFrame = 0, farLast = 0;
+/** One frame of the far tiles' loading: the next ones preloaded, a tile's models added every other frame, `FAR_STEPS`
+ *  at a time (not while a cell's level loads, unless 12 frames went by without). */
+function farStep(busy: boolean) {
+  farFrame++;
+  // (every tile in: the lamps of those added after the first frame, 150 models a frame: a few commits, each rebuilding
+  // the light list once; the scene binding binds a frame's new objects within the frame script's 50 ms, and ~1,100
+  // models at once took longer)
+  if (!farPending.length && !farNext.length && !farSteps.length) {
+    if (busy && farFrame - farLast < 12) return;
+    let n = 0;
+    for (const f of farQ.values()) {
+      if (!f.addLamps) continue;
+      if (n++ >= 150) return;
+      f.addLamps();
+    }
+    farLamps = false;
+    return;
+  }
+  while (farNext.length < 4 && farPending.length) {
+    loadFar(cam.pos, Infinity, 0);
+    const p = farPending.shift()!;
+    preloadModel(`assets/city/glb/${p.a.name}-far/${p.t.file}`, farNodes(p.t));
+    farNext.push({ p, since: farFrame });
+  }
+  if (farFrame - farLast < 2 || (busy && farFrame - farLast < 12)) return;
+  if (!farSteps.length) {
+    const next = farNext[0];
+    if (!next || farFrame - next.since < 4) return;
+    farNext.shift();
+    farSteps.push(...farTile(next.p.a, next.p.t, next.p.group));
+  }
+  const until = Date.now() + 15;
+  for (let n = 0; n < FAR_STEPS && farSteps.length && Date.now() < until; n++) farSteps.shift()!();
+  farLast = farFrame;
+}
+const FAR_FIRST = 900;
+/** Loads the pending tiles within `reach` of (x, z) (from the tile's box), or with `count`, the nearest that many. */
+function loadFar([x, , z]: V3, reach: number, count = Infinity) {
+  const size = 256;
+  const dist = (p: (typeof farPending)[number]) => {
+    const x0 = p.t.x * size + p.a.ox, z0 = p.t.z * size + p.a.oz;
+    return Math.hypot(Math.max(x0 - x, 0, x - (x0 + size)), Math.max(z0 - z, 0, z - (z0 + size)));
+  };
+  farPending.sort((p, q) => dist(p) - dist(q));
+  let n = 0;
+  while (farPending.length && n < count && dist(farPending[0]) <= reach) {
+    const p = farPending.shift()!;
+    for (const step of farTile(p.a, p.t, p.group)) step();
+    n++;
+  }
+}
 
 // ---------------------------------------------------------------- the far level's trees
 // Copies of six forms (tools/tokyo/to-glb.ts --city, trees.bin): each form one geometry, a quadrant's copies of it one
@@ -705,9 +787,9 @@ function setTime(next: Time, camera: PerspectiveCamera) {
       const binding = mat.shader!;
       mat.shader = midGlow.with({ ...binding.params, IsNight: night ? 1 : 0 }, binding.textures);
     }
-    for (const f of farQ.values()) if (f.lights && !f.covered) f.lights.power = night ? 1 : 0;
+    for (const f of farQ.values()) for (const m of [f.lights, f.lamps]) if (m && !f.covered) m.power = night ? 1 : 0;
     if (distant) distant.power = night ? 1 : 0;
-    for (const f of farQ.values()) for (const m of [f.base, f.lights]) if (m) m.customData = [night ? 0 : FAR_ROOM_DAY, 0, 0, 0];
+    for (const f of farQ.values()) for (const m of [f.base, f.lights, f.lamps]) if (m) m.customData = [night ? 0 : FAR_ROOM_DAY, 0, 0, 0];
   }
   console.log(`Tokyo · ${time} · 1 Day / 2 Dusk / 3 Night / T Cycle`);
 }
@@ -755,33 +837,74 @@ export function sceneFor(room: string) {
   const road = (id: string, size: number, puddles: number) => new SurfaceMaterial({ map: tex(id, size), normalMap: finishMap(id, "normal"), roughnessMap: finishMap(id, "rough"), worldScale: size, wet: 1, puddles: { scale: 2.5, amount: puddles }, grime: { amount: 0.3, scale: 3 } });
   const functions = { "road 0 ": road("asphalt", 3.5, 0.2).shader!, "road 1 ": road("pavers", 1.6, 0.12).shader!, "road 2 ": foliage, "road 3 ": road("concrete-worn", 2.5, 0.12).shader!, paint: wetLayer({ puddles: 0.4 }) };
   const trees = new Map(AREAS.map((a) => [a, lowmem ? null : farTrees(a)]));
-  for (const a of AREAS) for (const t of a.far.tiles) {
+  // (each tile's objects in a group of its own, made now: what a tile adds later goes in place)
+  // (a quadrant's models: its buildings and props; its lit windows and signs; its lamps' heads)
+  const quadNodes = (q: number) => [lowmem ? [`b${q}`] : [`b${q}`, `p${q}`], [`b${q}-night`], [`p${q}-night`]];
+  farNodes = (t) => {
+    const has = new Set(t.nodes ?? []);
+    return [["ground"], ...[0, 1, 2, 3].flatMap((q) => quadNodes(q).map((names) => names.filter((n) => has.has(n))).filter((n) => n.length))];
+  };
+  farTile = (a, t, group) => {
     const uri = `assets/city/glb/${a.name}-far/${t.file}`;
-    const ground = new GLTFModel(uri, { nodes: ["ground"], functions });
-    ground.position.set(a.ox, 0, a.oz);
-    scene.add(ground);
-    const has = new Set((t as { nodes?: string[] }).nodes ?? []);
+    const has = new Set(t.nodes ?? []);
+    const steps: (() => void)[] = [() => {
+      const ground = new GLTFModel(uri, { nodes: ["ground"], functions });
+      ground.position.set(a.ox, 0, a.oz);
+      group.add(ground);
+    }];
     for (let q = 0; q < 4; q++) {
+      const f = farQ.get(`${a.name}:${t.x}_${t.z}_${q}`)!;
       // (only the nodes the tile has: a model of none draws nothing and cannot be hidden in place)
       const model = (names: string[], lights = false) => {
         const nodes = names.filter((n) => has.has(n));
         if (!nodes.length) return null;
+        const night = time === "night";
         const m = new GLTFModel(uri, { nodes, functions: lights ? { "window lit far ": farWindows, "signs night ": farSigns } : { "window glass": farRooms } });
-        if (lights && !night) m.power = 0;
+        if (lights) m.power = night && !f.covered ? 1 : 0;
         m.customData = [night ? 0 : FAR_ROOM_DAY, 0, 0, 0];
-        m.position.set(a.ox, 0, a.oz);
-        scene.add(m);
+        // (a nearer level may already show the quadrant)
+        m.position.set(a.ox, f.covered ? -10000 : 0, a.oz);
+        group.add(m);
         return m;
       };
-      farQ.set(`${a.name}:${t.x}_${t.z}_${q}`, {
-        covered: false,
-        base: model(lowmem ? [`b${q}`] : [`b${q}`, `p${q}`]),
-        lights: model([`b${q}-night`, `p${q}-night`], true),
-        trees: trees.get(a)?.quadrant(`${t.x}_${t.z}_${q}`) ?? [],
+      const [base, windows, lamps] = quadNodes(q);
+      steps.push(() => { f.base = model(base); });
+      steps.push(() => {
+        f.lights = model(windows, true);
+        const add = () => { f.addLamps = null; f.lamps = model(lamps, true); };
+        if (farSetup) add();
+        else {
+          f.addLamps = add;
+          farLamps = true;
+        }
       });
-      for (const m of farQ.get(`${a.name}:${t.x}_${t.z}_${q}`)!.trees) scene.add(m);
+      steps.push(() => {
+        f.trees = trees.get(a)?.quadrant(`${t.x}_${t.z}_${q}`) ?? [];
+        for (const m of f.trees) {
+          if (f.covered) m.position.y = -10000;
+          group.add(m);
+        }
+      });
     }
+    return steps;
+  };
+  // The far tiles within FAR_FIRST of the camera before the first frame; the rest after it, the nearest first (`farStep`).
+  // Room "-whole": all of them at the start (an offline still: tools/shot.ts, tools/quality.ts).
+  const whole = room.includes("-whole");
+  farPending.length = 0;
+  for (const a of AREAS) for (const t of a.far.tiles) {
+    for (let q = 0; q < 4; q++) farQ.set(`${a.name}:${t.x}_${t.z}_${q}`, { covered: false, base: null, lights: null, lamps: null, trees: [], addLamps: null });
+    const group = new Group();
+    group.name = `far ${a.name} ${t.x} ${t.z}`;
+    scene.add(group);
+    farPending.push({ a, t, group });
   }
+  farNext.length = 0;
+  farSteps.length = 0;
+  farLamps = false;
+  farSetup = true;
+  loadFar(cam0(room), whole ? Infinity : FAR_FIRST);
+  farSetup = false;
   // the Shuto expressway's elevated decks (tools/tokyo/viaducts.ts: the compiled city has the road's level, no structure)
   scene.add(new GLTFModel("assets/city/glb/tokyo-viaducts.glb", { functions }));
   // the library: every material and model the baked cells use, in the scene from the start (so cells add in place)
@@ -879,6 +1002,13 @@ export function sceneFor(room: string) {
   return { scene, camera, options: { name: `tokyo-city-${time}`, width: 1280, height: 720 } };
 }
 
+/** Where the camera starts: the room's "-at", a route's start, else Golden Gai's middle alley. */
+function cam0(room: string): V3 {
+  const at = /-at=(-?[\d.]+),(-?[\d.]+)(?:,(-?[\d.]+))?/.exec(room);
+  if (route) return routeAt(route, 0).pos;
+  return at ? (at[3] ? [Number(at[1]), Number(at[2]), Number(at[3])] : [Number(at[1]), 34, Number(at[2])]) : [359.8, 32.3, -496.6];
+}
+
 function aim(camera: PerspectiveCamera) {
   camera.position.set(...cam.pos);
   const c = Math.cos(cam.pitch);
@@ -951,6 +1081,8 @@ export default defineGame<Record<string, never>>({
     aim(f.camera);
     if (held) return;
     retire(250);
+    // (the far tiles still to come, the nearest first)
+    if (farPending.length || farNext.length || farSteps.length || farLamps) farStep(loading());
     stream(cam.pos[0], cam.pos[1], cam.pos[2], { tris: FRAME_TRIS, until: Date.now() + FRAME_MS, objects: FRAME_OBJECTS });
   },
 });

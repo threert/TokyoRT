@@ -59,9 +59,10 @@ export type SignPage = { atlas: Buffer; pos: number[]; nor: number[]; uv: number
 
 /**
  * A tile's lettered boards, on as many atlas pages as their cells take (a page is 2048 wide and at most 4096 high;
- * every board gets its cell). Null when the tile has no boards.
+ * every board gets its cell). Null when the tile has no boards. `scale`: the pages written at that fraction of their
+ * size (the far level's: its boards are seen from 480 m and more, where a letter is a pixel or less).
  */
-export async function signBoards(all: Sign[]): Promise<{ pages: SignPage[]; boards: number } | null> {
+export async function signBoards(all: Sign[], scale = 1): Promise<{ pages: SignPage[]; boards: number } | null> {
   const signs = all.filter((s) => s.style < 3 && s.text);
   if (!signs.length) return null;
   // shelf-pack one cell per board (identical boards share a cell), each with its margin on every side; a cell that does
@@ -96,7 +97,9 @@ export async function signBoards(all: Sign[]): Promise<{ pages: SignPage[]; boar
         data.copyWithin((y * ATLAS_W + x) * ch, (sy * ATLAS_W + sx) * ch, (sy * ATLAS_W + sx) * ch + ch);
       }
     }
-    pages.push({ atlas: await sharp(data, { raw: { width: ATLAS_W, height: H, channels: ch } }).removeAlpha().png().toBuffer(), pos: [], nor: [], uv: [] });
+    const page = sharp(data, { raw: { width: ATLAS_W, height: H, channels: ch } }).removeAlpha();
+    if (scale !== 1) page.resize(Math.max(1, Math.round(ATLAS_W * scale)), Math.max(1, Math.round(H * scale)), { kernel: "lanczos3" });
+    pages.push({ atlas: await page.png().toBuffer(), pos: [], nor: [], uv: [] });
   }
   let boards = 0;
   // corners as read: bottom-left, bottom-right, top-right, top-left
