@@ -55,4 +55,14 @@ test('buildingMesh: a punched look is meshed with its own bays, not a 1.5 m curt
   assert.ok(glassTiles > 0, 'some seed below 0.25 in 40 tiles');
 });
 
+test('buildingMesh: a look with a window module is meshed with its bay', () => {
+  const sq = Float32Array.from([0, 0, 8, 0, 8, -8, 0, -8]);
+  const bay = (m) => { let n = 0; for (let t = 0; t < m.aBldg.length / 12; t++) if (m.aBldg[t * 12 + 2] === KIND.WALL) n = Math.max(n, m.aBldg[t * 12 + 3]); return n; };
+  const withBay = (b) => ({ ...office(34, 10), flags: 0, polygons: [[sq]], look: { ...punched, windows: { bay: b } } });
+  assert.equal(bay(buildingMesh([withBay(1.7)], 0, 0)), Math.fround(8 / 5)); // 8 m: 5 bays of 1.6 m, an office's near module
+  assert.equal(bay(buildingMesh([withBay(3.6)], 0, 0)), Math.fround(8 / 2));
+  const tower = { ...withBay(1.7), look: { ...curtain, windows: { bay: 1.7 } } };
+  assert.equal(bay(buildingMesh([tower], 0, 0)), Math.fround(8 / 5)); // (a curtain wall keeps its 1.5 m grid: 8 m is 5 of them too)
+});
+
 console.log(`${passed} passed`);

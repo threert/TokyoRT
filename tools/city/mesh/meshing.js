@@ -332,6 +332,8 @@ export function buildingMesh(buildings, tx, tz, marks = []) {
     const glassTower = !!b.surfaces?.length && !b.surfaces.some((f) => f.uv) && Math.max(b.height, shellTop(b.surfaces) - b.base) > 90;
     // (ThreeRT: `b.look`, the colour and curtain wall the near levels' dressing gave it, when the caller has them)
     const cat = facadeCategory(b, seed, glassTower);
+    // (ThreeRT: the bay the near levels' window module uses, when the look has one; a curtain wall keeps its grid)
+    const bayW = cat !== CAT.GLASS && b.look?.windows ? b.look.windows.bay : BAY[cat];
     const pal = PALETTE[cat], pick = pal[Math.floor(rnd() * pal.length)], tone = 0.92 + 0.16 * rnd();
     const wallCol = b.look ? b.look.wall : glassTower ? lin([0.3, 0.35, 0.41].map((c) => c * tone)) : painted ? lin(b.surfaces?.some((f) => f.uv) ? [((b.hint >> 16) & 255) / 255, ((b.hint >> 8) & 255) / 255, (b.hint & 255) / 255] : paint([((b.hint >> 16) & 255) / 255, ((b.hint >> 8) & 255) / 255, (b.hint & 255) / 255])) : lin(aerial(pick.slice(0, 3)).map((c) => Math.min(1, c * tone)));
     const wallLayer = HINT_LAYER[material] ?? pick[3];
@@ -423,12 +425,12 @@ export function buildingMesh(buildings, tx, tz, marks = []) {
           }
         });
         const wall = !isRoof && steep, len = s1 - s0;
-        let bays = wall && len >= 1.8 ? Math.max(1, Math.round(len / BAY[cat])) : 0, bay = bays ? len / bays : 0;
+        let bays = wall && len >= 1.8 ? Math.max(1, Math.round(len / bayW)) : 0, bay = bays ? len / bays : 0;
         // A wall modelled as many narrow strips (a curved tower, a facade with its piers) has no strip wide enough
         // for a window: there the bays are counted along the wall as a whole — the same measure for every strip in
         // the same plane, so the windows run on across them. (Its photograph is left out: a few texels a strip.)
         const strip = wall && len < 3 && y1 - y0 > 2.4 && b.surfaces.length > 150;
-        if (strip) { bay = BAY[cat]; bays = len / bay; s0 = 0; }
+        if (strip) { bay = bayW; bays = len / bay; s0 = 0; }
         const kind = wall ? KIND.WALL : ny > 0.985 ? KIND.FLAT_ROOF : steep ? KIND.SOLID : KIND.PITCHED_ROOF;
         const color = wall || kind === KIND.SOLID ? wallCol : kind === KIND.FLAT_ROOF ? flatCol : roofCol;
         const layer = wall || kind === KIND.SOLID ? wallLayer : kind === KIND.FLAT_ROOF ? WALL.ROOF : WALL.SIDING;
@@ -466,7 +468,7 @@ export function buildingMesh(buildings, tx, tz, marks = []) {
           if (len < 0.05) continue;
           const dx = (x1 - x0) / len, dz = (z1 - z0) / len;
           const nrm = [-dz, 0, dx]; // outward for CCW outlines and CW holes (see tileformat.js)
-          const bays = len < 1.8 ? 0 : Math.max(1, Math.round(len / BAY[cat])), bay = bays ? len / bays : 0;
+          const bays = len < 1.8 ? 0 : Math.max(1, Math.round(len / bayW)), bay = bays ? len / bays : 0;
           const yT = wallTop + parapet, vT = yT - b.base;
           vtx(x0, bottom, z0, nrm, wallCol, 0, -SINK, KIND.WALL, bay, wallLayer);
           vtx(x1, bottom, z1, nrm, wallCol, bays, -SINK, KIND.WALL, bay, wallLayer);

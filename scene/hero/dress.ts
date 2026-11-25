@@ -68,8 +68,25 @@ export interface DressOptions {
 export type BuildingLook = {
   wall: string; kind: "commercial" | "office" | "apartment" | "house";
   curtain: { glass: string; spandrel: string; fin: string; spandrelH: number } | null;
-  windows: { layout: string; w: number; h: number; frame: string };
+  /** The window module (`moduleOf`): its layout, its width and height as fractions of a bay and a storey, the bay (m)
+   *  and a ribbon's height (m). */
+  windows: { layout: string; w: number; h: number; frame: string; bay: number; ribbonH: number };
+  /** The storeys as the dress splits the wall (m above the building's base): the ground floor's height, then the
+   *  upper floors' under the parapet. */
+  floors: { storeys: number; ground: number; upper: number };
 };
+
+/** A wall's storeys (`h`: from its foot to under the parapet): a 4 m ground floor (a small building's its share, up to
+ *  3 m), the rest shared by the floors above. */
+export function storeySplit(h: number, storeys: number, small: boolean) {
+  const ground = small ? Math.min(3.0, h / storeys) : 4.0;
+  return { ground, upper: storeys > 1 ? (h - ground) / (storeys - 1) : 0 };
+}
+/** The split for the look (from the building's base: the far level counts its rows from there). */
+function lookFloors(h: number, storeys: number, small: boolean): BuildingLook["floors"] {
+  const { ground, upper } = storeySplit(h, storeys, small);
+  return { storeys, ground: +ground.toFixed(3), upper: +upper.toFixed(3) };
+}
 
 /** One random stream per building (and per thing outside buildings): what a building looks like does not depend on
  *  which others are dressed with it, so a baked cell and its neighbours agree, and so do the two levels. */
@@ -229,7 +246,8 @@ export function dressDistrict(data: HeroData, M: Mats, night: boolean, seed = 11
     ab.looks?.set(b.id, {
       wall: wallMat.name, kind: st.kind,
       curtain: hr ? { glass: hr.glass.name, spandrel: hr.spandrel.name, fin: hr.fin.name, spandrelH: hr.spandrelH } : null,
-      windows: { layout: W.layout, w: +W.wFrac.toFixed(3), h: +W.hFrac.toFixed(3), frame: W.frame.name },
+      windows: { layout: W.layout, w: +W.wFrac.toFixed(3), h: +W.hFrac.toFixed(3), frame: W.frame.name, bay: +st.bay.toFixed(3), ribbonH: +st.winH.toFixed(3) },
+      floors: lookFloors(top - parapet - b.base, storeys, small),
     });
     // which side is the front: the wall that faces the most open ground (the street, not the gap to the next block)
     const openAhead = b.pts.map(([ax, az], i) => {
@@ -276,8 +294,7 @@ export function dressDistrict(data: HeroData, M: Mats, night: boolean, seed = 11
       const from = open >= 2 ? -Infinity : over;
       const y0 = groundY(mx, mz);
       const f = new Frame([ox, footY, oz], u, n);
-      const gH = small ? Math.min(3.0, (top - parapet - y0) / storeys) : 4.0;
-      const upper = storeys > 1 ? (top - parapet - y0 - gH) / (storeys - 1) : 0;
+      const { ground: gH, upper } = storeySplit(top - parapet - y0, storeys, small);
       const floors = [y0, ...Array.from({ length: storeys - 1 }, (_, k) => y0 + gH + k * upper), top - parapet];
       const e: Edge = { b, f, L, y0, top, exposed, floors, small, from };
       edges.push(e);

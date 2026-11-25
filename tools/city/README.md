@@ -16,7 +16,8 @@ tiles into geometry. Imported from [jeantimex/tokyo](https://github.com/jeantime
   photo coordinates (`photos.mjs` and `meshes.mjs` are gone). The mesher colours those buildings itself.
 - `mesh/meshing.js` takes a building's wall colour and curtain wall from `b.look` when it has one (TokyoRT's far level:
   the look the near levels' dressing gave that building, `looks.json` from tools/tokyo/city-bake.ts). With a look, a
-  building is glass only for a curtain wall (`facadeCategory`); `tests/far-looks.test.mjs` checks it.
+  building is glass only for a curtain wall (`facadeCategory`), and a look with a window module (`b.look.windows`)
+  fits its bays to that module's width; `tests/far-looks.test.mjs` checks both.
 
 ## Use
 

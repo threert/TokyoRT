@@ -33,7 +33,7 @@ import shibuyaFar from "../assets/city/glb/shibuya-far/index.json";
 import shibuyaBaked from "../assets/city/baked/shibuya/index.json";
 import ROUTES from "../assets/city/routes.json";
 
-type FarIndex = { bounds: { minX: number; maxX: number; minZ: number; maxZ: number }; tiles: { x: number; z: number; file: string; nodes?: string[] }[] };
+type FarIndex = { bounds: { minX: number; maxX: number; minZ: number; maxZ: number }; tiles: { x: number; z: number; file: string; nodes?: string[] }[]; curtains?: Record<string, number[]> };
 /** An area: compiled and baked in its own frame (tools/city: metres east and south of its own origin), placed in the
  *  city's (Shinjuku's) by its origin's offset (tools/tokyo/stitch.ts `offsetOf`, which the tools place the routes, the
  *  viaducts and the city beyond by). Its cells (the baked level, tools/tokyo/city-bake.ts) and their kit; its far
@@ -205,6 +205,19 @@ const farWindows = new MaterialFunction("TokyoFarGlass", {
 const farRooms = new MaterialFunction("TokyoFarRoom", {
   code: `o.emissive = vec3<f32>(1.0, 0.93, 0.82) * i.custom.x;`,
 }).with();
+// A tower's room by day through its curtain glass, which tints what it lets through (`Tint`: the glass's colour, the far
+// index's `curtains`), as the near levels' panes do: lit or not, its pane is that glass.
+const farCurtainRoom = new MaterialFunction("TokyoFarCurtainRoom", {
+  params: { Tint: [1, 1, 1, 0] },
+  code: `o.emissive = vec3<f32>(1.0, 0.93, 0.82) * $Tint.rgb * i.custom.x;`,
+});
+const farCurtainLit = new MaterialFunction("TokyoFarCurtainLit", {
+  params: { Tint: [1, 1, 1, 0] },
+  code: `if (i.power < 0.5) {
+    o.base = vec3<f32>(0.02, 0.022, 0.025); o.specular = 0.5;
+    o.emissive = vec3<f32>(1.0, 0.93, 0.82) * $Tint.rgb * i.custom.x;
+  }`,
+});
 /** A far window's room by day (nits, through its pane): set where the skyline's 480 m switch changed least (0, 150,
  *  300, 500 nits: mean ΔE 0.68, 0.63, 0.60, 0.59). */
 const FAR_ROOM_DAY = 300;
@@ -845,6 +858,10 @@ export function sceneFor(room: string) {
     return [["ground"], ...[0, 1, 2, 3].flatMap((q) => quadNodes(q).map((names) => names.filter((n) => has.has(n))).filter((n) => n.length))];
   };
   farTile = (a, t, group) => {
+    // (a tower's panes first: "window glass <curtain>" before "window glass")
+    const tints = Object.entries(a.far.curtains ?? {}).map(([g, c]): [string, { Tint: [number, number, number, number] }] => [g, { Tint: [c[0], c[1], c[2], 0] }]);
+    const curtainRooms = Object.fromEntries(tints.map(([g, p]) => [`window glass ${g}`, farCurtainRoom.with(p)]));
+    const curtainLit = Object.fromEntries(tints.map(([g, p]) => [`window lit curtain ${g} `, farCurtainLit.with(p)]));
     const uri = `assets/city/glb/${a.name}-far/${t.file}`;
     const has = new Set(t.nodes ?? []);
     const steps: (() => void)[] = [() => {
@@ -859,7 +876,7 @@ export function sceneFor(room: string) {
         const nodes = names.filter((n) => has.has(n));
         if (!nodes.length) return null;
         const night = time === "night";
-        const m = new GLTFModel(uri, { nodes, functions: lights ? { "window lit far ": farWindows, "signs night ": farSigns } : { "window glass": farRooms } });
+        const m = new GLTFModel(uri, { nodes, functions: lights ? { ...curtainLit, "window lit far ": farWindows, "signs night ": farSigns } : { ...curtainRooms, "window glass": farRooms } });
         if (lights) m.power = night && !f.covered ? 1 : 0;
         m.customData = [night ? 0 : FAR_ROOM_DAY, 0, 0, 0];
         // (a nearer level may already show the quadrant)

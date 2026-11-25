@@ -222,7 +222,7 @@ function mergeRare(entries: Entry[], instances: Instances): Entry[] {
 /** looks.json (see the top): the looks, and the mean linear albedo of each material they name. */
 async function writeLooks() {
   if (only) return;
-  const byName = new Map<string, { color: { r: number; g: number; b: number }; transmission?: number; p?: { map?: { uri: string } } }>();
+  const byName = new Map<string, { color: { r: number; g: number; b: number }; transmission?: number; roughness?: number; metalness?: number; p?: { map?: { uri: string } } }>();
   const collectMats = (v: unknown, depth = 0) => {
     if (!v || typeof v !== "object" || depth > 3) return;
     const m = v as { name?: string; color?: { r: number } };
@@ -238,7 +238,7 @@ async function writeLooks() {
   }
   const lin = (c: number) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
   const texMean = new Map<string, number[]>();
-  const materials: Record<string, { albedo: number[]; transmission?: number }> = {};
+  const materials: Record<string, { albedo: number[]; transmission?: number; roughness?: number; metalness?: number }> = {};
   for (const name of used) {
     const m = byName.get(name);
     if (!m) { console.warn(`looks: no material ${name}`); continue; }
@@ -254,7 +254,11 @@ async function writeLooks() {
       base = texMean.get(uri)!;
     }
     const c = [m.color.r, m.color.g, m.color.b];
-    materials[name] = { albedo: base.map((v, k) => +(v * c[k]).toFixed(4)), ...(m.transmission ? { transmission: m.transmission } : {}) };
+    // (and how it reflects: a tower's spandrels are polished metal, which far away is not a matt wall of their colour)
+    materials[name] = {
+      albedo: base.map((v, k) => +(v * c[k]).toFixed(4)), ...(m.transmission ? { transmission: m.transmission } : {}),
+      ...(typeof m.roughness === "number" ? { roughness: m.roughness } : {}), ...(m.metalness ? { metalness: m.metalness } : {}),
+    };
   }
   writeFileSync(join(outDir, "looks.json"), JSON.stringify({ looks: Object.fromEntries(looks), materials }));
   console.log(`looks: ${looks.size} buildings, ${Object.keys(materials).length} materials -> ${join(outDir, "looks.json")}`);
